@@ -1,0 +1,276 @@
+# carregando...
+# -*- coding: utf-8 -*-
+"""AutoCotas - Altura de paredes, vaos e transpasse de telas."""
+__title__ = 'Auto\nCotas'
+__author__ = 'Samuel PLUGIN'
+
+import clr
+clr.AddReference('RevitAPI')
+clr.AddReference('RevitAPIUI')
+clr.AddReference('PresentationCore')
+clr.AddReference('PresentationFramework')
+clr.AddReference('WindowsBase')
+
+from Autodesk.Revit.DB import (
+    FilteredElementCollector, BuiltInCategory,
+    ViewType, Transaction, XYZ, Line, Options,
+    DimensionType, ReferenceArray, Reference, ElementId,
+)
+from Autodesk.Revit.UI import TaskDialog
+import System.Windows as SW
+import System.Windows.Controls as SWC
+import System.Windows.Media as SWM
+
+doc   = __revit__.ActiveUIDocument.Document
+uidoc = __revit__.ActiveUIDocument
+
+def get_dim_type(id_val):
+    el = doc.GetElement(ElementId(id_val))
+    if el: return el
+    tipos = FilteredElementCollector(doc).OfClass(DimensionType).ToElements()
+    return tipos[0] if tipos else None
+
+def mostrar_janela():
+    window = SW.Window()
+    window.Title = u"AutoCotas - Opcoes"
+    window.Width = 380
+    window.Height = 320
+    window.ResizeMode = SW.ResizeMode.NoResize
+    window.WindowStartupLocation = SW.WindowStartupLocation.CenterScreen
+    window.Background = SWM.SolidColorBrush(SWM.Color.FromRgb(245,245,245))
+
+    stack = SWC.StackPanel()
+    stack.Margin = SW.Thickness(20)
+
+    titulo = SWC.TextBlock()
+    titulo.Text = u"O que deseja cotar?"
+    titulo.FontSize = 14
+    titulo.FontWeight = SW.FontWeights.Bold
+    titulo.Margin = SW.Thickness(0,0,0,12)
+    stack.Children.Add(titulo)
+
+    cb_altura = SWC.CheckBox()
+    cb_altura.Content = u"Altura total das paredes"
+    cb_altura.IsChecked = True
+    cb_altura.Margin = SW.Thickness(0,4,0,4)
+    cb_altura.FontSize = 12
+    stack.Children.Add(cb_altura)
+
+    cb_vaos = SWC.CheckBox()
+    cb_vaos.Content = u"Abertura de vaos (portas/janelas)"
+    cb_vaos.IsChecked = True
+    cb_vaos.Margin = SW.Thickness(0,4,0,4)
+    cb_vaos.FontSize = 12
+    stack.Children.Add(cb_vaos)
+
+    cb_telas = SWC.CheckBox()
+    cb_telas.Content = u"Transpasse entre telas soldadas"
+    cb_telas.IsChecked = True
+    cb_telas.Margin = SW.Thickness(0,4,0,16)
+    cb_telas.FontSize = 12
+    stack.Children.Add(cb_telas)
+
+    lbl = SWC.TextBlock()
+    lbl.Text = u"Tipo de cota:"
+    lbl.FontSize = 12
+    lbl.FontWeight = SW.FontWeights.SemiBold
+    lbl.Margin = SW.Thickness(0,0,0,6)
+    stack.Children.Add(lbl)
+
+    combo = SWC.ComboBox()
+    combo.Margin = SW.Thickness(0,0,0,16)
+    combo.FontSize = 11
+    tipos = [
+        (u"Cota G3 - padrao TQS",                1584376),
+        (u"Cota - 2 mm (cm) - 0 casas decimais", 1131975),
+        (u"Cota - 3 mm (cm) - 0 casas decimais", 1136228),
+        (u"Cota - 2 mm (cm) - 1 casa decimal",   884212),
+        (u"Cota - 2 mm (m)",                      884738),
+    ]
+    for nome, id_val in tipos:
+        item = SWC.ComboBoxItem()
+        item.Content = nome
+        item.Tag = id_val
+        combo.Items.Add(item)
+    combo.SelectedIndex = 0
+    stack.Children.Add(combo)
+
+    btns = SWC.StackPanel()
+    btns.Orientation = SWC.Orientation.Horizontal
+    btns.HorizontalAlignment = SW.HorizontalAlignment.Right
+
+    btn_ok = SWC.Button()
+    btn_ok.Content = u"Aplicar"
+    btn_ok.Width = 90
+    btn_ok.Height = 32
+    btn_ok.Margin = SW.Thickness(0,0,10,0)
+    btn_ok.Background = SWM.SolidColorBrush(SWM.Color.FromRgb(0,120,215))
+    btn_ok.Foreground = SWM.Brushes.White
+    btn_ok.FontWeight = SW.FontWeights.Bold
+
+    btn_cancel = SWC.Button()
+    btn_cancel.Content = u"Cancelar"
+    btn_cancel.Width = 90
+    btn_cancel.Height = 32
+
+    resultado = [None]
+
+    def on_ok(s, e):
+        sel = combo.SelectedItem
+        resultado[0] = {
+            'altura': cb_altura.IsChecked,
+            'vaos':   cb_vaos.IsChecked,
+            'telas':  cb_telas.IsChecked,
+            'dim_id': sel.Tag if sel else 1584376,
+        }
+        window.DialogResult = True
+        window.Close()
+
+    def on_cancel(s, e):
+        window.DialogResult = False
+        window.Close()
+
+    btn_ok.Click += on_ok
+    btn_cancel.Click += on_cancel
+    btns.Children.Add(btn_ok)
+    btns.Children.Add(btn_cancel)
+    stack.Children.Add(btns)
+    window.Content = stack
+    ok = window.ShowDialog()
+    return resultado[0] if ok else None
+
+def cotar_altura_paredes(vista, dim_type):
+    paredes = FilteredElementCollector(doc, vista.Id)\
+        .OfCategory(BuiltInCategory.OST_Walls)\
+        .WhereElementIsNotElementType().ToElements()
+    bbs = [wall.get_BoundingBox(vista) for wall in paredes if wall.get_BoundingBox(vista)]
+    if not bbs: return 0
+    x_min = min(bb.Min.X for bb in bbs)
+    z_min = min(bb.Min.Z for bb in bbs)
+    z_max = max(bb.Max.Z for bb in bbs)
+    x_cota = x_min - 2.5
+    count = 0
+    for wall in paredes:
+        try:
+            opt = Options()
+            opt.View = vista
+            opt.ComputeReferences = True
+            geo = wall.get_Geometry(opt)
+            top_ref = bot_ref = None
+            for obj in geo:
+                if not hasattr(obj, 'Faces'): continue
+                for face in obj.Faces:
+                    n = face.FaceNormal
+                    ref = face.Reference
+                    if ref is None: continue
+                    if n.Z > 0.9 and top_ref is None:    top_ref = ref
+                    elif n.Z < -0.9 and bot_ref is None: bot_ref = ref
+            if not top_ref or not bot_ref: continue
+            bb = wall.get_BoundingBox(vista)
+            if bb is None: continue
+            ra = ReferenceArray()
+            ra.Append(bot_ref)
+            ra.Append(top_ref)
+            y = bb.Min.Y
+            linha = Line.CreateBound(XYZ(x_cota, y, z_min - 0.2), XYZ(x_cota, y, z_max + 0.2))
+            if doc.Create.NewDimension(vista, linha, ra, dim_type): count += 1
+        except Exception: pass
+    return count
+
+def cotar_vaos(vista, dim_type):
+    count = 0
+    for cat in [BuiltInCategory.OST_Doors, BuiltInCategory.OST_Windows]:
+        elems = FilteredElementCollector(doc, vista.Id)\
+            .OfCategory(cat).WhereElementIsNotElementType().ToElements()
+        for elem in elems:
+            try:
+                opt = Options()
+                opt.View = vista
+                opt.ComputeReferences = True
+                geo = elem.get_Geometry(opt)
+                l_ref = r_ref = None
+                for obj in geo:
+                    if not hasattr(obj, 'Faces'): continue
+                    for face in obj.Faces:
+                        n = face.FaceNormal
+                        ref = face.Reference
+                        if ref is None: continue
+                        if (n.X > 0.7 or n.Y > 0.7) and r_ref is None:   r_ref = ref
+                        elif (n.X < -0.7 or n.Y < -0.7) and l_ref is None: l_ref = ref
+                if not l_ref or not r_ref: continue
+                bb = elem.get_BoundingBox(vista)
+                if bb is None: continue
+                ra = ReferenceArray()
+                ra.Append(l_ref)
+                ra.Append(r_ref)
+                z = bb.Max.Z + 1.5
+                y = bb.Min.Y
+                linha = Line.CreateBound(XYZ(bb.Min.X - 0.3, y, z), XYZ(bb.Max.X + 0.3, y, z))
+                if doc.Create.NewDimension(vista, linha, ra, dim_type): count += 1
+            except Exception: pass
+    return count
+
+def cotar_telas(vista, dim_type):
+    telas = list(FilteredElementCollector(doc, vista.Id)
+        .OfCategory(BuiltInCategory.OST_FabricAreas)
+        .WhereElementIsNotElementType().ToElements())
+    telas += list(FilteredElementCollector(doc, vista.Id)
+        .OfCategory(BuiltInCategory.OST_FabricReinforcement)
+        .WhereElementIsNotElementType().ToElements())
+    if len(telas) < 2: return 0
+    bbs_all = [t.get_BoundingBox(vista) for t in telas if t.get_BoundingBox(vista)]
+    x_cota = min(bb.Min.X for bb in bbs_all) - 2.0 if bbs_all else -5.0
+    count = 0
+    for i in range(len(telas) - 1):
+        try:
+            e1, e2 = telas[i], telas[i+1]
+            bb1 = e1.get_BoundingBox(vista)
+            bb2 = e2.get_BoundingBox(vista)
+            if bb1 is None or bb2 is None: continue
+            ra = ReferenceArray()
+            ra.Append(Reference(e1))
+            ra.Append(Reference(e2))
+            y = bb1.Min.Y
+            p0 = XYZ(x_cota, y, bb1.Max.Z + 0.2)
+            p1 = XYZ(x_cota, y, bb2.Min.Z - 0.2)
+            if abs(p1.Z - p0.Z) < 0.01: continue
+            linha = Line.CreateBound(p0, p1)
+            if doc.Create.NewDimension(vista, linha, ra, dim_type): count += 1
+        except Exception: pass
+    return count
+
+def main():
+    vista = uidoc.ActiveView
+    if vista.ViewType not in [ViewType.Elevation, ViewType.Section, ViewType.FloorPlan, ViewType.CeilingPlan]:
+        TaskDialog.Show("AutoCotas", u"Abra uma elevacao, corte ou planta.")
+        return
+    opcoes = mostrar_janela()
+    if opcoes is None: return
+    dim_type = get_dim_type(opcoes['dim_id'])
+    if dim_type is None:
+        TaskDialog.Show("AutoCotas", u"Tipo de cota nao encontrado.")
+        return
+    ta = tv = tt = 0
+    t = Transaction(doc, u"AutoCotas")
+    t.Start()
+    try:
+        if opcoes['altura']: ta = cotar_altura_paredes(vista, dim_type)
+        if opcoes['vaos']:   tv = cotar_vaos(vista, dim_type)
+        if opcoes['telas']:  tt = cotar_telas(vista, dim_type)
+        t.Commit()
+    except Exception as e:
+        t.RollBack()
+        TaskDialog.Show(u"AutoCotas - Erro", str(e))
+        return
+    total = ta + tv + tt
+    if total == 0:
+        msg = u"Nenhuma cota adicionada.\nVerifique se ha elementos visiveis na vista."
+    else:
+        msg  = u"Cotas adicionadas!\n\n"
+        msg += u"  Altura de paredes: {}\n".format(ta)
+        msg += u"  Vaos:              {}\n".format(tv)
+        msg += u"  Transpasse telas:  {}\n".format(tt)
+        msg += u"\n  Total: {} cotas".format(total)
+    TaskDialog.Show(u"AutoCotas", msg)
+
+main()
