@@ -1,6 +1,7 @@
 import sys
 import clr
 import math
+import re
 
 clr.AddReference('ProtoGeometry')
 from Autodesk.DesignScript.Geometry import *
@@ -32,6 +33,30 @@ NOME_VISTA = "Esquema de corte - PAREDES"
 # ===============================
 # FUNÇÕES
 # ===============================
+
+def numero_da_folha(valor):
+    try:
+        texto = str(valor).upper().strip()
+        texto = texto.replace("N", "")
+        numeros = re.findall(r'\d+', texto)
+
+        if numeros:
+            return int(numeros[0])
+    except:
+        pass
+
+    return 999999
+
+
+def formatar_folha(valor):
+    texto = str(valor).upper().strip()
+
+    if texto.startswith("N"):
+        return texto
+
+    return "N" + texto
+
+
 def get_param_value(el, nomes):
     if el is None:
         return "-"
@@ -53,6 +78,7 @@ def get_param_value(el, nomes):
             pass
 
     return "-"
+
 
 def get_host(el):
     try:
@@ -79,6 +105,7 @@ def get_host(el):
 
     return None
 
+
 def host_eh_categoria(host, categoria):
     if host is None:
         return False
@@ -86,6 +113,7 @@ def host_eh_categoria(host, categoria):
         return False
 
     return host.Category.Id.IntegerValue == int(categoria)
+
 
 def get_marca_tipo_tela(el):
     try:
@@ -100,6 +128,7 @@ def get_marca_tipo_tela(el):
 
     return "-"
 
+
 # ===============================
 # AGRUPAMENTO
 # ===============================
@@ -110,7 +139,6 @@ sem_dimensao = []
 for el in elements:
     host = get_host(el)
 
-    # mantém SOMENTE telas hospedadas em PAREDES
     if not host_eh_categoria(host, CATEGORIA_DESEJADA):
         ignorados.append(el.Id)
         continue
@@ -132,7 +160,6 @@ for el in elements:
     numero_folha = get_param_value(el, [nome_folha])
     marca_tipo_tela = get_marca_tipo_tela(el)
 
-    # paredes estão sem partição, então organizamos pela marca de tipo da tela
     organizador = marca_tipo_tela
 
     chave = (organizador, marca_tipo_tela, l_orig, c_orig)
@@ -146,8 +173,19 @@ for el in elements:
     grupos[chave]["folhas"].append(numero_folha)
     grupos[chave]["elementos"].append(el)
 
-# ordena para ficar organizado
-grupos_ordenados = sorted(grupos.items(), key=lambda item: item[0])
+
+# Ordena os grupos pela primeira folha:
+# N1, N2, N3... N10
+grupos_ordenados = sorted(
+    grupos.items(),
+    key=lambda item: (
+        item[0][0],
+        min([numero_da_folha(f) for f in item[1]["folhas"]]),
+        item[0][1],
+        item[0][2],
+        item[0][3]
+    )
+)
 
 # ===============================
 # DESENHO
@@ -166,7 +204,6 @@ ids_processados = []
 
 TransactionManager.Instance.EnsureInTransaction(doc)
 
-# criar vista de desenho
 vt_types = FilteredElementCollector(doc).OfClass(ViewFamilyType).ToElements()
 drafting_type = None
 
@@ -190,7 +227,6 @@ while True:
 
 text_type_id = doc.GetDefaultElementTypeId(ElementTypeGroup.TextNoteType)
 
-# região preenchida
 filled_region_type = None
 col_frt = FilteredElementCollector(doc).OfClass(FilledRegionType)
 
@@ -209,12 +245,11 @@ if filled_region_type is None:
     except:
         filled_region_type = None
 
-# desenhar grupos
+
 for chave, dados in grupos_ordenados:
 
     organizador, marca_tipo_tela, l_orig, c_orig = chave
 
-    # cria título quando muda a marca de tipo
     if organizador != grupo_atual:
         if grupo_atual is not None:
             cursor_x = 0.0
@@ -249,7 +284,6 @@ for chave, dados in grupos_ordenados:
     p3 = XYZ(cursor_x + larg_desenho, cursor_y + alt_desenho, 0)
     p4 = XYZ(cursor_x, cursor_y + alt_desenho, 0)
 
-    # região preenchida
     if filled_region_type:
         try:
             curve_loop = CurveLoop()
@@ -261,28 +295,25 @@ for chave, dados in grupos_ordenados:
         except:
             pass
 
-    # contorno
     linha_inf = doc.Create.NewDetailCurve(nova_vista, Line.CreateBound(p1, p2))
     linha_dir = doc.Create.NewDetailCurve(nova_vista, Line.CreateBound(p2, p3))
     linha_sup = doc.Create.NewDetailCurve(nova_vista, Line.CreateBound(p3, p4))
     linha_esq = doc.Create.NewDetailCurve(nova_vista, Line.CreateBound(p4, p1))
 
-    # diagonal
     doc.Create.NewDetailCurve(nova_vista, Line.CreateBound(p1, p3))
 
-    # texto da folha
     ponto_medio = p1.Add(p3).Multiply(0.5)
     angulo_diag = math.atan2(alt_desenho, larg_desenho)
 
-    folhas_unicas = sorted(set(folhas))
+    folhas_unicas = sorted(
+        set(folhas),
+        key=numero_da_folha
+    )
 
     folhas_texto = []
+
     for f in folhas_unicas:
-        f = str(f)
-        if f.upper().startswith("N"):
-            folhas_texto.append(f)
-        else:
-            folhas_texto.append("N" + f)
+        folhas_texto.append(formatar_folha(f))
 
     texto_folha = ", ".join(folhas_texto)
 
@@ -290,9 +321,14 @@ for chave, dados in grupos_ordenados:
     options_folha.HorizontalAlignment = HorizontalTextAlignment.Center
     options_folha.Rotation = angulo_diag
 
-    TextNote.Create(doc, nova_vista.Id, ponto_medio, texto_folha, options_folha)
+    TextNote.Create(
+        doc,
+        nova_vista.Id,
+        ponto_medio,
+        texto_folha,
+        options_folha
+    )
 
-    # texto de informação
     texto_info = "Tipo de tela: {}\nQtd: {}".format(
         marca_tipo_tela,
         quantidade
@@ -309,7 +345,6 @@ for chave, dados in grupos_ordenados:
         options_info
     )
 
-    # cota horizontal
     ref_array_larg = ReferenceArray()
     ref_array_larg.Append(linha_esq.GeometryCurve.Reference)
     ref_array_larg.Append(linha_dir.GeometryCurve.Reference)
@@ -321,7 +356,6 @@ for chave, dados in grupos_ordenados:
 
     doc.Create.NewDimension(nova_vista, linha_cota_larg, ref_array_larg)
 
-    # cota vertical
     ref_array_alt = ReferenceArray()
     ref_array_alt.Append(linha_inf.GeometryCurve.Reference)
     ref_array_alt.Append(linha_sup.GeometryCurve.Reference)
