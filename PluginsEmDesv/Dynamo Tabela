@@ -1,0 +1,210 @@
+# -*- coding: utf-8 -*-
+"""
+CRIAR TABELAS - Rotina Dynamo
+===============================
+Cole este codigo em um no Python Script do Dynamo.
+
+INPUTS esperados (IN[]):
+  IN[0]  - bool  -> Criar tabela de Vergalhoes?
+  IN[1]  - bool  -> Criar tabela de Tela Soldada?
+  IN[2]  - str   -> Nome da tabela de Vergalhoes
+  IN[3]  - str   -> Nome da tabela de Tela Soldada
+  IN[4]  - list  -> Campos de Vergalhoes a incluir (lista de strings)
+  IN[5]  - list  -> Campos de Tela Soldada a incluir (lista de strings)
+  IN[6]  - str   -> Filtro por LOCAL (vazio = sem filtro)
+  IN[7]  - bool  -> Inserir na folha ativa?
+
+OUTPUTS (OUT):
+  Lista de strings com resultado de cada operacao
+"""
+
+import clr
+clr.AddReference('RevitAPI')
+clr.AddReference('RevitAPIUI')
+
+from Autodesk.Revit.DB import (
+    FilteredElementCollector, ViewSchedule,
+    ScheduleSortGroupField, ScheduleSortOrder,
+    ScheduleFilter, ScheduleFilterType,
+    ElementId, Transaction, ScheduleSheetInstance, UV,
+    ViewSheet,
+)
+
+# ── Contexto Dynamo ───────────────────────────────────────
+import RevitServices
+from RevitServices.Persistence import DocumentManager
+from RevitServices.Transactions import TransactionManager
+
+doc   = DocumentManager.Instance.CurrentDBDocument
+uidoc = DocumentManager.Instance.CurrentUIApplication.ActiveUIDocument
+
+# ── Leitura dos INPUTS ────────────────────────────────────
+fazer_verg    = IN[0]   # bool
+fazer_tela    = IN[1]   # bool
+nome_verg     = IN[2] if IN[2] else u"TABELA DE ARMACAO ABERTURAS"
+nome_tela     = IN[3] if IN[3] else u"TABELA DE ARMADURA DE TELA SOLDADA"
+campos_verg   = IN[4]   # lista de strings com keywords dos campos
+campos_tela   = IN[5]   # lista de strings com keywords dos campos
+filtro        = IN[6] if IN[6] else None
+na_folha      = IN[7]   # bool
+
+# ── IDs de categoria ─────────────────────────────────────
+CAT_VERGALHAO = -2009000   # OST_Rebar
+CAT_TELA      = -2009016   # OST_FabricSheets
+
+# ── Campos padrao se o usuario nao passar nada ────────────
+# (keywords que batem com os nomes dos campos no Revit)
+CAMPOS_VERG_PADRAO = [
+    (u"LOCAL",           u"Parti"),
+    (u"POSICAO (P)",     u"Numero do vergalhao"),
+    (u"QUANTIDADE",      u"Quantidade por conjunto"),
+    (u"DIAMETRO (mm)",   u"Diametro da barra"),
+    (u"COMPRIMENTO(cm)", u"Comprimento da barra"),
+    (u"COMP.TOTAL (m)",  u"Comprimento total da barra"),
+    (u"PESO (kg)",       u"Peso"),
+]
+
+CAMPOS_TELA_PADRAO = [
+    (u"LOCAL",       u"Marca do hospedeiro"),
+    (u"N",           u"Numero da folha de tela"),
+    (u"QUANT.",      u"Contagem"),
+    (u"TELA",        u"Marca de tipo"),
+    (u"LARGURA",     u"Largura total do corte"),
+    (u"COMPRIMENTO", u"Comprimento total do corte"),
+    (u"PESO (Kgf)",  u"Massa da folha de corte"),
+]
+
+# =====================================================================
+# HELPERS
+# =====================================================================
+def get_nome_unico(nome_base):
+    existing = set(
+        s.Name for s in
+        FilteredElementCollector(doc).OfClass(ViewSchedule).ToElements()
+    )
+    nome = nome_base
+    i = 1
+    while nome in existing:
+        nome = u"{} ({})".format(nome_base, i)
+        i += 1
+    return nome
+
+def get_field_by_name(sched, keyword):
+    """Busca campo disponivel pela keyword (case-insensitive, match parcial)."""
+    sd = sched.Definition
+    for sf in sd.GetSchedulableFields():
+        try:
+            n = sf.GetName(doc)
+            if keyword.lower() in n.lower():
+                return sf
+        except:
+            pass
+    return None
+
+def montar_lista_campos(campos_input, campos_padrao):
+    """
+    Se o usuario passou uma lista de keywords customizadas, usa elas.
+    Caso contrario usa o padrao.
+    Retorna lista de (header, keyword).
+    """
+    if campos_input and isinstance(campos_input, list) and len(campos_input) > 0:
+        # O usuario passou keywords — monta com header = keyword
+        return [(kw, kw) for kw in campos_input if kw]
+    return campos_padrao
+
+def criar_tabela(nome, cat_id_int, lista_campos, filtro_txt=None, filtro_kw=None):
+    cat_id     = ElementId(cat_id_int)
+    nome_final = get_nome_unico(nome)
+
+    sched = ViewSchedule.CreateSchedule(doc, cat_id)
+    sched.Name = nome_final
+    sd = sched.Definition
+    sd.ShowHeaders = True
+
+    primeiro_campo_id = None
+    campos_adicionados = 0
+
+    for header, kw in lista_campos:
+        sf = get_field_by_name(sched, kw)
+        if sf:
+            campo = sd.AddField(sf)
+            campo.ColumnHeading = header
+            if primeiro_campo_id is None:
+                primeiro_campo_id = campo.FieldId
+            campos_adicionados += 1
+
+    # Ordenar pelo primeiro campo (LOCAL)
+    if primeiro_campo_id:
+        sgf = ScheduleSortGroupField(primeiro_campo_id, ScheduleSortOrder.Ascending)
+        sd.AddSortGroupField(sgf)
+
+    # Filtro opcional por LOCAL
+    if filtro_txt and filtro_kw:
+        for i in range(sd.GetFieldCount()):
+            f = sd.GetField(i)
+            try:
+                if filtro_kw.lower() in f.GetName().lower():
+                    sf_filter = ScheduleFilter(
+                        f.FieldId, ScheduleFilterType.Contains, filtro_txt
+                    )
+                    sd.AddFilter(sf_filter)
+                    break
+            except:
+                pass
+
+    return sched, nome_final, campos_adicionados
+
+def inserir_na_folha(sched):
+    vista = uidoc.ActiveView
+    if not isinstance(vista, ViewSheet):
+        return False
+    try:
+        ScheduleSheetInstance.Create(doc, vista.Id, sched.Id, UV(0.15, 0.15))
+        return True
+    except:
+        return False
+
+# =====================================================================
+# EXECUCAO PRINCIPAL
+# =====================================================================
+resultados = []
+
+# O Dynamo gerencia transacoes de forma diferente do pyRevit
+# Usamos TransactionManager do RevitServices
+TransactionManager.Instance.EnsureInTransaction(doc)
+
+try:
+    if fazer_verg:
+        lista_v = montar_lista_campos(campos_verg, CAMPOS_VERG_PADRAO)
+        sched_v, nome_v, qtd_v = criar_tabela(
+            nome_verg, CAT_VERGALHAO, lista_v,
+            filtro_txt=filtro, filtro_kw=u"parti"
+        )
+        msg = u"OK - VERGALHOES: '{}' | {} campos".format(nome_v, qtd_v)
+        if na_folha:
+            ok = inserir_na_folha(sched_v)
+            msg += u" | Folha: {}".format(u"inserida" if ok else u"nao era folha ativa")
+        resultados.append(msg)
+
+    if fazer_tela:
+        lista_t = montar_lista_campos(campos_tela, CAMPOS_TELA_PADRAO)
+        sched_t, nome_t, qtd_t = criar_tabela(
+            nome_tela, CAT_TELA, lista_t,
+            filtro_txt=filtro, filtro_kw=u"hospedeiro"
+        )
+        msg = u"OK - TELA SOLDADA: '{}' | {} campos".format(nome_t, qtd_t)
+        if na_folha:
+            ok = inserir_na_folha(sched_t)
+            msg += u" | Folha: {}".format(u"inserida" if ok else u"nao era folha ativa")
+        resultados.append(msg)
+
+    if not fazer_verg and not fazer_tela:
+        resultados.append(u"Nenhum tipo selecionado. Ative IN[0] ou IN[1].")
+
+except Exception as ex:
+    resultados.append(u"ERRO: {}".format(str(ex)))
+
+finally:
+    TransactionManager.Instance.TransactionTaskDone()
+
+OUT = resultados
