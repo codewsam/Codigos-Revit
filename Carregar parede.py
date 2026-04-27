@@ -30,6 +30,9 @@ nome_folha = IN[3]
 CATEGORIA_DESEJADA = BuiltInCategory.OST_Walls
 NOME_VISTA = "Esquema de corte - PAREDES"
 
+# nome do parâmetro que está na parede
+PARAM_NOME_VISTA = "Nome da vista"
+
 # ===============================
 # FUNÇÕES
 # ===============================
@@ -53,25 +56,30 @@ def formatar_folha(valor):
     return "N" + texto
 
 
-def get_param_value(el, nomes):
+def ler_parametro(el, nomes, padrao="-"):
     if el is None:
-        return "-"
+        return padrao
+
     for nome in nomes:
         try:
             p = el.LookupParameter(nome)
             if p and p.HasValue:
                 if p.StorageType == StorageType.String:
                     valor = p.AsString()
-                    return valor if valor else "-"
+                    return valor if valor else padrao
+
                 elif p.StorageType == StorageType.Integer:
                     return str(p.AsInteger())
+
                 elif p.StorageType == StorageType.Double:
                     return str(round(p.AsDouble(), 3))
+
                 elif p.StorageType == StorageType.ElementId:
                     return str(p.AsElementId().IntegerValue)
         except:
             pass
-    return "-"
+
+    return padrao
 
 
 def get_host(el):
@@ -81,11 +89,13 @@ def get_host(el):
             return doc.GetElement(host_id)
     except:
         pass
+
     try:
         if el.Host:
             return el.Host
     except:
         pass
+
     try:
         p = el.get_Parameter(BuiltInParameter.HOST_ID_PARAM)
         if p:
@@ -94,14 +104,17 @@ def get_host(el):
                 return doc.GetElement(host_id)
     except:
         pass
+
     return None
 
 
 def host_eh_categoria(host, categoria):
     if host is None:
         return False
+
     if host.Category is None:
         return False
+
     return host.Category.Id.IntegerValue == int(categoria)
 
 
@@ -109,17 +122,20 @@ def get_marca_tipo_tela(el):
     try:
         tipo_tela = doc.GetElement(el.GetTypeId())
         p_marca_tipo = tipo_tela.get_Parameter(BuiltInParameter.ALL_MODEL_TYPE_MARK)
+
         if p_marca_tipo and p_marca_tipo.HasValue:
             valor = p_marca_tipo.AsString()
             return valor if valor else "-"
     except:
         pass
+
     return "-"
 
 
 def get_marca_hospedeiro(host):
     if host is None:
         return "-"
+
     try:
         p = host.LookupParameter("Marca")
         if p and p.HasValue:
@@ -127,6 +143,7 @@ def get_marca_hospedeiro(host):
             return valor if valor else "-"
     except:
         pass
+
     try:
         p = host.get_Parameter(BuiltInParameter.ALL_MODEL_MARK)
         if p and p.HasValue:
@@ -134,19 +151,36 @@ def get_marca_hospedeiro(host):
             return valor if valor else "-"
     except:
         pass
+
     return "-"
 
 
-# <<< NOVO: lê o campo Partição diretamente da tela
 def get_particao(el):
     try:
-        p = el.LookupParameter(u"Parti\xe7\xe3o")
+        p = el.LookupParameter(u"Partição")
         if p and p.HasValue:
             valor = p.AsString()
             return valor if valor else "Sem Partição"
     except:
         pass
+
     return "Sem Partição"
+
+
+def get_nome_vista_parede(host):
+    valor = ler_parametro(
+        host,
+        [
+            PARAM_NOME_VISTA,
+            "Nome da Vista",
+            "NOME DA VISTA",
+            "Nome Vista",
+            "Vista"
+        ],
+        "Sem Nome da Vista"
+    )
+
+    return valor
 
 
 # ===============================
@@ -177,20 +211,27 @@ for el in elements:
         sem_dimensao.append(el.Id)
         continue
 
-    numero_folha     = get_param_value(el, [nome_folha])
-    marca_tipo_tela  = get_marca_tipo_tela(el)
+    numero_folha = ler_parametro(el, [nome_folha])
+    marca_tipo_tela = get_marca_tipo_tela(el)
     marca_hospedeiro = get_marca_hospedeiro(host)
-    particao         = get_particao(el)  # <<< NOVO
+    particao = get_particao(el)
 
-    # <<< MODIFICADO: organizador = Partição + Marca do hospedeiro
-    organizador = particao
+    nome_vista_parede = get_nome_vista_parede(host)
 
-    chave = (particao, marca_hospedeiro, marca_tipo_tela, l_orig, c_orig)
+    chave = (
+        nome_vista_parede,
+        particao,
+        marca_hospedeiro,
+        marca_tipo_tela,
+        l_orig,
+        c_orig
+    )
 
     if chave not in grupos:
         grupos[chave] = {
             "folhas": [],
             "elementos": [],
+            "nome_vista_parede": nome_vista_parede,
             "marca_hospedeiro": marca_hospedeiro,
             "particao": particao
         }
@@ -199,16 +240,19 @@ for el in elements:
     grupos[chave]["elementos"].append(el)
 
 
-# <<< MODIFICADO: ordena por Partição primeiro, depois marca hospedeiro
+# ===============================
+# ORDENAÇÃO
+# ===============================
 grupos_ordenados = sorted(
     grupos.items(),
     key=lambda item: (
-        item[0][0],  # particao
-        item[0][1],  # marca_hospedeiro
+        item[0][0],  # Nome da vista
+        item[0][1],  # Partição
+        item[0][2],  # Marca da parede
         min([numero_da_folha(f) for f in item[1]["folhas"]]),
-        item[0][2],  # marca_tipo_tela
-        item[0][3],  # l_orig
-        item[0][4]   # c_orig
+        item[0][3],  # Tipo de tela
+        item[0][4],  # Largura
+        item[0][5]   # Comprimento
     )
 )
 
@@ -224,8 +268,10 @@ cursor_y = 0.0
 altura_max_da_linha = 0.0
 contador_coluna = 0
 
-particao_atual = None   # <<< controla mudança de partição
+nome_vista_atual = None
+particao_atual = None
 grupo_atual = None
+
 ids_processados = []
 
 TransactionManager.Instance.EnsureInTransaction(doc)
@@ -274,12 +320,39 @@ if filled_region_type is None:
 
 for chave, dados in grupos_ordenados:
 
-    particao, marca_hospedeiro, marca_tipo_tela, l_orig, c_orig = chave
-    particao_dados   = dados["particao"]
-    marca_hosp_dados = dados["marca_hospedeiro"]
+    nome_vista_parede, particao, marca_hospedeiro, marca_tipo_tela, l_orig, c_orig = chave
 
-    # <<< NOVO: quando muda a PARTIÇÃO → cabeçalho de seção
-    if particao_dados != particao_atual:
+    # ===============================
+    # CABEÇALHO: NOME DA VISTA
+    # ===============================
+    if nome_vista_parede != nome_vista_atual:
+
+        if nome_vista_atual is not None:
+            cursor_x = 0.0
+            cursor_y -= altura_max_da_linha + ESPACAMENTO_ENTRE_GRUPOS * 3
+            altura_max_da_linha = 0.0
+            contador_coluna = 0
+
+        options_vista = TextNoteOptions(text_type_id)
+        options_vista.HorizontalAlignment = HorizontalTextAlignment.Left
+
+        TextNote.Create(
+            doc,
+            nova_vista.Id,
+            XYZ(cursor_x, cursor_y + 5.0, 0),
+            "########## VISTA: {} ##########".format(nome_vista_parede.upper()),
+            options_vista
+        )
+
+        nome_vista_atual = nome_vista_parede
+        particao_atual = None
+        grupo_atual = None
+
+    # ===============================
+    # CABEÇALHO: PARTIÇÃO
+    # ===============================
+    if particao != particao_atual:
+
         if particao_atual is not None:
             cursor_x = 0.0
             cursor_y -= altura_max_da_linha + ESPACAMENTO_ENTRE_GRUPOS * 2
@@ -293,15 +366,18 @@ for chave, dados in grupos_ordenados:
             doc,
             nova_vista.Id,
             XYZ(cursor_x, cursor_y + 3.0, 0),
-            "===== {} =====".format(particao_dados.upper()),
+            "===== {} =====".format(particao.upper()),
             options_pav
         )
 
-        particao_atual = particao_dados
-        grupo_atual = None  # força recriar subtítulo de parede
+        particao_atual = particao
+        grupo_atual = None
 
-    # quando muda a PAREDE dentro da mesma partição → subtítulo
-    if marca_hosp_dados != grupo_atual:
+    # ===============================
+    # SUBTÍTULO: PAREDE
+    # ===============================
+    if marca_hospedeiro != grupo_atual:
+
         if grupo_atual is not None:
             cursor_x = 0.0
             cursor_y -= altura_max_da_linha + ESPACAMENTO_ENTRE_GRUPOS
@@ -315,18 +391,18 @@ for chave, dados in grupos_ordenados:
             doc,
             nova_vista.Id,
             XYZ(cursor_x, cursor_y + 1.5, 0),
-            "PAREDE - {}".format(marca_hosp_dados),
+            "PAREDE - {}".format(marca_hospedeiro),
             options_titulo
         )
 
-        grupo_atual = marca_hosp_dados
+        grupo_atual = marca_hospedeiro
 
     folhas = dados["folhas"]
     elementos_grupo = dados["elementos"]
     quantidade = len(elementos_grupo)
 
     larg_desenho = c_orig
-    alt_desenho  = l_orig
+    alt_desenho = l_orig
 
     p1 = XYZ(cursor_x, cursor_y, 0)
     p2 = XYZ(cursor_x + larg_desenho, cursor_y, 0)
@@ -355,17 +431,25 @@ for chave, dados in grupos_ordenados:
     angulo_diag = math.atan2(alt_desenho, larg_desenho)
 
     folhas_unicas = sorted(set(folhas), key=numero_da_folha)
-    folhas_texto  = [formatar_folha(f) for f in folhas_unicas]
-    texto_folha   = ", ".join(folhas_texto)
+    folhas_texto = [formatar_folha(f) for f in folhas_unicas]
+    texto_folha = ", ".join(folhas_texto)
 
     options_folha = TextNoteOptions(text_type_id)
     options_folha.HorizontalAlignment = HorizontalTextAlignment.Center
     options_folha.Rotation = angulo_diag
 
-    TextNote.Create(doc, nova_vista.Id, ponto_medio, texto_folha, options_folha)
+    TextNote.Create(
+        doc,
+        nova_vista.Id,
+        ponto_medio,
+        texto_folha,
+        options_folha
+    )
 
-    texto_info = "Parede: {}\nTipo de tela: {}\nQtd: {}".format(
-        marca_hosp_dados,
+    texto_info = "Vista: {}\nLocal: {}\nParede: {}\nTipo de tela: {}\nQtd: {}".format(
+        nome_vista_parede,
+        particao,
+        marca_hospedeiro,
         marca_tipo_tela,
         quantidade
     )
