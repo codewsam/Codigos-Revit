@@ -29,11 +29,6 @@ NOME_VISTA = "Esquema de corte - LAJES"
 # ===============================
 
 def numero_da_folha(valor):
-    """
-    Transforma N1, n1, 1, N10 em número.
-    Serve para ordenar corretamente:
-    N1, N2, N3... N10
-    """
     try:
         texto = str(valor).upper().strip()
         texto = texto.replace("N", "")
@@ -48,12 +43,6 @@ def numero_da_folha(valor):
 
 
 def formatar_folha(valor):
-    """
-    Garante que a folha apareça com N na frente.
-    Exemplo:
-    1  -> N1
-    N1 -> N1
-    """
     texto = str(valor).upper().strip()
 
     if texto.startswith("N"):
@@ -142,6 +131,17 @@ def get_marca_tipo_tela(el):
     return "-"
 
 
+def arredondar_dimensao(valor):
+    """
+    Arredonda a dimensão para evitar que medidas iguais
+    sejam separadas por pequenas diferenças decimais do Revit.
+    """
+    try:
+        return round(float(valor), 4)
+    except:
+        return valor
+
+
 # ===============================
 # AGRUPAMENTO
 # ===============================
@@ -172,6 +172,11 @@ for el in elements:
         sem_dimensao.append(el.Id)
         continue
 
+    # Aqui é a correção principal
+    # Dimensões iguais entram no mesmo grupo
+    l_grupo = arredondar_dimensao(l_orig)
+    c_grupo = arredondar_dimensao(c_orig)
+
     numero_folha = get_param_value(el, [nome_folha])
     marca_tipo_tela = get_marca_tipo_tela(el)
 
@@ -188,8 +193,8 @@ for el in elements:
         organizador,
         marca_tipo_tela,
         particao,
-        l_orig,
-        c_orig
+        l_grupo,
+        c_grupo
     )
 
     if chave not in grupos:
@@ -202,12 +207,9 @@ for el in elements:
     grupos[chave]["elementos"].append(el)
 
 
-# Ordena os grupos por:
-# 1. Local / Partição
-# 2. Número da primeira folha
-# 3. Tipo de tela
-# 4. Largura
-# 5. Comprimento
+# ===============================
+# ORDENAÇÃO
+# ===============================
 
 grupos_ordenados = sorted(
     grupos.items(),
@@ -350,8 +352,6 @@ for chave, dados in grupos_ordenados:
     ponto_medio = p1.Add(p3).Multiply(0.5)
     angulo_diag = math.atan2(alt_desenho, larg_desenho)
 
-    # Aqui está a correção principal:
-    # ordena N1, N2, N3... N10 corretamente
     folhas_unicas = sorted(
         set(folhas),
         key=numero_da_folha
