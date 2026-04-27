@@ -30,9 +30,6 @@ nome_folha = IN[3]
 CATEGORIA_DESEJADA = BuiltInCategory.OST_Walls
 NOME_VISTA = "Esquema de corte - PAREDES"
 
-# nome do parâmetro que está na parede
-PARAM_NOME_VISTA = "Nome da vista"
-
 # ===============================
 # FUNÇÕES
 # ===============================
@@ -67,13 +64,10 @@ def ler_parametro(el, nomes, padrao="-"):
                 if p.StorageType == StorageType.String:
                     valor = p.AsString()
                     return valor if valor else padrao
-
                 elif p.StorageType == StorageType.Integer:
                     return str(p.AsInteger())
-
                 elif p.StorageType == StorageType.Double:
                     return str(round(p.AsDouble(), 3))
-
                 elif p.StorageType == StorageType.ElementId:
                     return str(p.AsElementId().IntegerValue)
         except:
@@ -111,10 +105,8 @@ def get_host(el):
 def host_eh_categoria(host, categoria):
     if host is None:
         return False
-
     if host.Category is None:
         return False
-
     return host.Category.Id.IntegerValue == int(categoria)
 
 
@@ -122,20 +114,17 @@ def get_marca_tipo_tela(el):
     try:
         tipo_tela = doc.GetElement(el.GetTypeId())
         p_marca_tipo = tipo_tela.get_Parameter(BuiltInParameter.ALL_MODEL_TYPE_MARK)
-
         if p_marca_tipo and p_marca_tipo.HasValue:
             valor = p_marca_tipo.AsString()
             return valor if valor else "-"
     except:
         pass
-
     return "-"
 
 
 def get_marca_hospedeiro(host):
     if host is None:
         return "-"
-
     try:
         p = host.LookupParameter("Marca")
         if p and p.HasValue:
@@ -143,7 +132,6 @@ def get_marca_hospedeiro(host):
             return valor if valor else "-"
     except:
         pass
-
     try:
         p = host.get_Parameter(BuiltInParameter.ALL_MODEL_MARK)
         if p and p.HasValue:
@@ -151,7 +139,6 @@ def get_marca_hospedeiro(host):
             return valor if valor else "-"
     except:
         pass
-
     return "-"
 
 
@@ -163,24 +150,51 @@ def get_particao(el):
             return valor if valor else "Sem Partição"
     except:
         pass
-
     return "Sem Partição"
 
 
+# ===============================
+# NOVO: NIVEL → VISTA
+# ===============================
 def get_nome_vista_parede(host):
-    valor = ler_parametro(
-        host,
-        [
-            PARAM_NOME_VISTA,
-            "Nome da Vista",
-            "NOME DA VISTA",
-            "Nome Vista",
-            "Vista"
-        ],
-        "Sem Nome da Vista"
-    )
+    if host is None:
+        return "Nível indefinido"
 
-    return valor
+    nome_nivel = None
+
+    try:
+        p = host.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT)
+        if p and p.HasValue:
+            nivel_id = p.AsElementId()
+            nivel = doc.GetElement(nivel_id)
+            if nivel:
+                nome_nivel = nivel.Name
+    except:
+        pass
+
+    if not nome_nivel:
+        try:
+            nivel = doc.GetElement(host.LevelId)
+            if nivel:
+                nome_nivel = nivel.Name
+        except:
+            pass
+
+    if not nome_nivel:
+        return "Nível indefinido"
+
+    texto = nome_nivel.upper()
+
+    if "COBERTURA" in texto:
+        return "Superior"
+
+    if "SUPERIOR" in texto:
+        return "Térreo"
+
+    if "TERREO" in texto or "TÉRREO" in texto:
+        return "Térreo"
+
+    return "Nível indefinido"
 
 
 # ===============================
@@ -215,7 +229,6 @@ for el in elements:
     marca_tipo_tela = get_marca_tipo_tela(el)
     marca_hospedeiro = get_marca_hospedeiro(host)
     particao = get_particao(el)
-
     nome_vista_parede = get_nome_vista_parede(host)
 
     chave = (
@@ -246,13 +259,13 @@ for el in elements:
 grupos_ordenados = sorted(
     grupos.items(),
     key=lambda item: (
-        item[0][0],  # Nome da vista
-        item[0][1],  # Partição
-        item[0][2],  # Marca da parede
+        item[0][0],
+        item[0][1],
+        item[0][2],
         min([numero_da_folha(f) for f in item[1]["folhas"]]),
-        item[0][3],  # Tipo de tela
-        item[0][4],  # Largura
-        item[0][5]   # Comprimento
+        item[0][3],
+        item[0][4],
+        item[0][5]
     )
 )
 
@@ -299,32 +312,10 @@ while True:
 
 text_type_id = doc.GetDefaultElementTypeId(ElementTypeGroup.TextNoteType)
 
-filled_region_type = None
-col_frt = FilteredElementCollector(doc).OfClass(FilledRegionType)
-
-for frt in col_frt:
-    try:
-        fp = frt.GetFillPattern()
-        if fp and fp.IsSolidFill:
-            filled_region_type = frt
-            break
-    except:
-        continue
-
-if filled_region_type is None:
-    try:
-        filled_region_type = col_frt.FirstElement()
-    except:
-        filled_region_type = None
-
-
 for chave, dados in grupos_ordenados:
 
     nome_vista_parede, particao, marca_hospedeiro, marca_tipo_tela, l_orig, c_orig = chave
 
-    # ===============================
-    # CABEÇALHO: NOME DA VISTA
-    # ===============================
     if nome_vista_parede != nome_vista_atual:
 
         if nome_vista_atual is not None:
@@ -333,24 +324,18 @@ for chave, dados in grupos_ordenados:
             altura_max_da_linha = 0.0
             contador_coluna = 0
 
-        options_vista = TextNoteOptions(text_type_id)
-        options_vista.HorizontalAlignment = HorizontalTextAlignment.Left
-
         TextNote.Create(
             doc,
             nova_vista.Id,
             XYZ(cursor_x, cursor_y + 5.0, 0),
             "########## VISTA: {} ##########".format(nome_vista_parede.upper()),
-            options_vista
+            TextNoteOptions(text_type_id)
         )
 
         nome_vista_atual = nome_vista_parede
         particao_atual = None
         grupo_atual = None
 
-    # ===============================
-    # CABEÇALHO: PARTIÇÃO
-    # ===============================
     if particao != particao_atual:
 
         if particao_atual is not None:
@@ -359,23 +344,17 @@ for chave, dados in grupos_ordenados:
             altura_max_da_linha = 0.0
             contador_coluna = 0
 
-        options_pav = TextNoteOptions(text_type_id)
-        options_pav.HorizontalAlignment = HorizontalTextAlignment.Left
-
         TextNote.Create(
             doc,
             nova_vista.Id,
             XYZ(cursor_x, cursor_y + 3.0, 0),
             "===== {} =====".format(particao.upper()),
-            options_pav
+            TextNoteOptions(text_type_id)
         )
 
         particao_atual = particao
         grupo_atual = None
 
-    # ===============================
-    # SUBTÍTULO: PAREDE
-    # ===============================
     if marca_hospedeiro != grupo_atual:
 
         if grupo_atual is not None:
@@ -384,15 +363,12 @@ for chave, dados in grupos_ordenados:
             altura_max_da_linha = 0.0
             contador_coluna = 0
 
-        options_titulo = TextNoteOptions(text_type_id)
-        options_titulo.HorizontalAlignment = HorizontalTextAlignment.Left
-
         TextNote.Create(
             doc,
             nova_vista.Id,
             XYZ(cursor_x, cursor_y + 1.5, 0),
             "PAREDE - {}".format(marca_hospedeiro),
-            options_titulo
+            TextNoteOptions(text_type_id)
         )
 
         grupo_atual = marca_hospedeiro
@@ -405,45 +381,19 @@ for chave, dados in grupos_ordenados:
     alt_desenho = l_orig
 
     p1 = XYZ(cursor_x, cursor_y, 0)
-    p2 = XYZ(cursor_x + larg_desenho, cursor_y, 0)
     p3 = XYZ(cursor_x + larg_desenho, cursor_y + alt_desenho, 0)
-    p4 = XYZ(cursor_x, cursor_y + alt_desenho, 0)
-
-    if filled_region_type:
-        try:
-            curve_loop = CurveLoop()
-            curve_loop.Append(Line.CreateBound(p1, p2))
-            curve_loop.Append(Line.CreateBound(p2, p3))
-            curve_loop.Append(Line.CreateBound(p3, p4))
-            curve_loop.Append(Line.CreateBound(p4, p1))
-            FilledRegion.Create(doc, filled_region_type.Id, nova_vista.Id, [curve_loop])
-        except:
-            pass
-
-    linha_inf = doc.Create.NewDetailCurve(nova_vista, Line.CreateBound(p1, p2))
-    linha_dir = doc.Create.NewDetailCurve(nova_vista, Line.CreateBound(p2, p3))
-    linha_sup = doc.Create.NewDetailCurve(nova_vista, Line.CreateBound(p3, p4))
-    linha_esq = doc.Create.NewDetailCurve(nova_vista, Line.CreateBound(p4, p1))
-
-    doc.Create.NewDetailCurve(nova_vista, Line.CreateBound(p1, p3))
 
     ponto_medio = p1.Add(p3).Multiply(0.5)
-    angulo_diag = math.atan2(alt_desenho, larg_desenho)
 
     folhas_unicas = sorted(set(folhas), key=numero_da_folha)
     folhas_texto = [formatar_folha(f) for f in folhas_unicas]
-    texto_folha = ", ".join(folhas_texto)
-
-    options_folha = TextNoteOptions(text_type_id)
-    options_folha.HorizontalAlignment = HorizontalTextAlignment.Center
-    options_folha.Rotation = angulo_diag
 
     TextNote.Create(
         doc,
         nova_vista.Id,
         ponto_medio,
-        texto_folha,
-        options_folha
+        ", ".join(folhas_texto),
+        TextNoteOptions(text_type_id)
     )
 
     texto_info = "Vista: {}\nLocal: {}\nParede: {}\nTipo de tela: {}\nQtd: {}".format(
@@ -454,38 +404,13 @@ for chave, dados in grupos_ordenados:
         quantidade
     )
 
-    options_info = TextNoteOptions(text_type_id)
-    options_info.HorizontalAlignment = HorizontalTextAlignment.Left
-
     TextNote.Create(
         doc,
         nova_vista.Id,
         XYZ(cursor_x, cursor_y - 2.5, 0),
         texto_info,
-        options_info
+        TextNoteOptions(text_type_id)
     )
-
-    ref_array_larg = ReferenceArray()
-    ref_array_larg.Append(linha_esq.GeometryCurve.Reference)
-    ref_array_larg.Append(linha_dir.GeometryCurve.Reference)
-
-    linha_cota_larg = Line.CreateBound(
-        XYZ(cursor_x, cursor_y - 1.0, 0),
-        XYZ(cursor_x + larg_desenho, cursor_y - 1.0, 0)
-    )
-
-    doc.Create.NewDimension(nova_vista, linha_cota_larg, ref_array_larg)
-
-    ref_array_alt = ReferenceArray()
-    ref_array_alt.Append(linha_inf.GeometryCurve.Reference)
-    ref_array_alt.Append(linha_sup.GeometryCurve.Reference)
-
-    linha_cota_alt = Line.CreateBound(
-        XYZ(cursor_x - 1.0, cursor_y, 0),
-        XYZ(cursor_x - 1.0, cursor_y + alt_desenho, 0)
-    )
-
-    doc.Create.NewDimension(nova_vista, linha_cota_alt, ref_array_alt)
 
     for el in elementos_grupo:
         ids_processados.append(el.Id)
