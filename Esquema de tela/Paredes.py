@@ -39,28 +39,23 @@ def numero_da_folha(valor):
         texto = str(valor).upper().strip()
         texto = texto.replace("N", "")
         numeros = re.findall(r'\d+', texto)
-
         if numeros:
             return int(numeros[0])
     except:
         pass
-
     return 999999
 
 
 def formatar_folha(valor):
     texto = str(valor).upper().strip()
-
     if texto.startswith("N"):
         return texto
-
     return "N" + texto
 
 
 def get_param_value(el, nomes):
     if el is None:
         return "-"
-
     for nome in nomes:
         try:
             p = el.LookupParameter(nome)
@@ -76,7 +71,6 @@ def get_param_value(el, nomes):
                     return str(p.AsElementId().IntegerValue)
         except:
             pass
-
     return "-"
 
 
@@ -87,13 +81,11 @@ def get_host(el):
             return doc.GetElement(host_id)
     except:
         pass
-
     try:
         if el.Host:
             return el.Host
     except:
         pass
-
     try:
         p = el.get_Parameter(BuiltInParameter.HOST_ID_PARAM)
         if p:
@@ -102,7 +94,6 @@ def get_host(el):
                 return doc.GetElement(host_id)
     except:
         pass
-
     return None
 
 
@@ -111,7 +102,6 @@ def host_eh_categoria(host, categoria):
         return False
     if host.Category is None:
         return False
-
     return host.Category.Id.IntegerValue == int(categoria)
 
 
@@ -119,13 +109,32 @@ def get_marca_tipo_tela(el):
     try:
         tipo_tela = doc.GetElement(el.GetTypeId())
         p_marca_tipo = tipo_tela.get_Parameter(BuiltInParameter.ALL_MODEL_TYPE_MARK)
-
         if p_marca_tipo and p_marca_tipo.HasValue:
             valor = p_marca_tipo.AsString()
             return valor if valor else "-"
     except:
         pass
+    return "-"
 
+
+# <<< MODIFICADO: nova função para pegar a Marca do hospedeiro (parede)
+def get_marca_hospedeiro(host):
+    if host is None:
+        return "-"
+    try:
+        p = host.LookupParameter("Marca")
+        if p and p.HasValue:
+            valor = p.AsString()
+            return valor if valor else "-"
+    except:
+        pass
+    try:
+        p = host.get_Parameter(BuiltInParameter.ALL_MODEL_MARK)
+        if p and p.HasValue:
+            valor = p.AsString()
+            return valor if valor else "-"
+    except:
+        pass
     return "-"
 
 
@@ -159,27 +168,29 @@ for el in elements:
 
     numero_folha = get_param_value(el, [nome_folha])
     marca_tipo_tela = get_marca_tipo_tela(el)
+    marca_hospedeiro = get_marca_hospedeiro(host)  # <<< MODIFICADO
 
-    organizador = marca_tipo_tela
+    # <<< MODIFICADO: organizador agora é a Marca do hospedeiro (parede)
+    organizador = marca_hospedeiro
 
+    # <<< MODIFICADO: chave inclui marca_hospedeiro para agrupamento correto
     chave = (organizador, marca_tipo_tela, l_orig, c_orig)
 
     if chave not in grupos:
         grupos[chave] = {
             "folhas": [],
-            "elementos": []
+            "elementos": [],
+            "marca_hospedeiro": marca_hospedeiro  # <<< MODIFICADO: salva para uso no desenho
         }
 
     grupos[chave]["folhas"].append(numero_folha)
     grupos[chave]["elementos"].append(el)
 
 
-# Ordena os grupos pela primeira folha:
-# N1, N2, N3... N10
 grupos_ordenados = sorted(
     grupos.items(),
     key=lambda item: (
-        item[0][0],
+        item[0][0],  # organizador (marca hospedeiro)
         min([numero_da_folha(f) for f in item[1]["folhas"]]),
         item[0][1],
         item[0][2],
@@ -249,6 +260,7 @@ if filled_region_type is None:
 for chave, dados in grupos_ordenados:
 
     organizador, marca_tipo_tela, l_orig, c_orig = chave
+    marca_hospedeiro = dados["marca_hospedeiro"]  # <<< MODIFICADO
 
     if organizador != grupo_atual:
         if grupo_atual is not None:
@@ -257,7 +269,8 @@ for chave, dados in grupos_ordenados:
             altura_max_da_linha = 0.0
             contador_coluna = 0
 
-        titulo = "PAREDES - {}".format(organizador)
+        # <<< MODIFICADO: título agora mostra a Marca do hospedeiro
+        titulo = "PAREDE - {}".format(marca_hospedeiro)
 
         options_titulo = TextNoteOptions(text_type_id)
         options_titulo.HorizontalAlignment = HorizontalTextAlignment.Left
@@ -305,31 +318,19 @@ for chave, dados in grupos_ordenados:
     ponto_medio = p1.Add(p3).Multiply(0.5)
     angulo_diag = math.atan2(alt_desenho, larg_desenho)
 
-    folhas_unicas = sorted(
-        set(folhas),
-        key=numero_da_folha
-    )
-
-    folhas_texto = []
-
-    for f in folhas_unicas:
-        folhas_texto.append(formatar_folha(f))
-
+    folhas_unicas = sorted(set(folhas), key=numero_da_folha)
+    folhas_texto = [formatar_folha(f) for f in folhas_unicas]
     texto_folha = ", ".join(folhas_texto)
 
     options_folha = TextNoteOptions(text_type_id)
     options_folha.HorizontalAlignment = HorizontalTextAlignment.Center
     options_folha.Rotation = angulo_diag
 
-    TextNote.Create(
-        doc,
-        nova_vista.Id,
-        ponto_medio,
-        texto_folha,
-        options_folha
-    )
+    TextNote.Create(doc, nova_vista.Id, ponto_medio, texto_folha, options_folha)
 
-    texto_info = "Tipo de tela: {}\nQtd: {}".format(
+    # <<< MODIFICADO: texto agora mostra Marca do hospedeiro + tipo de tela
+    texto_info = "Parede: {}\nTipo de tela: {}\nQtd: {}".format(
+        marca_hospedeiro,
         marca_tipo_tela,
         quantidade
     )
