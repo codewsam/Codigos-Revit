@@ -1,6 +1,7 @@
 import sys
 import clr
 import math
+import re
 
 clr.AddReference('ProtoGeometry')
 from Autodesk.DesignScript.Geometry import *
@@ -23,6 +24,44 @@ nome_folha = IN[3]
 CATEGORIA_DESEJADA = BuiltInCategory.OST_Floors
 NOME_VISTA = "Esquema de corte - LAJES"
 
+# ===============================
+# FUNÇÕES
+# ===============================
+
+def numero_da_folha(valor):
+    """
+    Transforma N1, n1, 1, N10 em número.
+    Serve para ordenar corretamente:
+    N1, N2, N3... N10
+    """
+    try:
+        texto = str(valor).upper().strip()
+        texto = texto.replace("N", "")
+        numeros = re.findall(r'\d+', texto)
+
+        if numeros:
+            return int(numeros[0])
+    except:
+        pass
+
+    return 999999
+
+
+def formatar_folha(valor):
+    """
+    Garante que a folha apareça com N na frente.
+    Exemplo:
+    1  -> N1
+    N1 -> N1
+    """
+    texto = str(valor).upper().strip()
+
+    if texto.startswith("N"):
+        return texto
+
+    return "N" + texto
+
+
 def get_param_value(el, nomes):
     if el is None:
         return "-"
@@ -30,14 +69,18 @@ def get_param_value(el, nomes):
     for nome in nomes:
         try:
             p = el.LookupParameter(nome)
+
             if p and p.HasValue:
                 if p.StorageType == StorageType.String:
                     valor = p.AsString()
                     return valor if valor else "-"
+
                 elif p.StorageType == StorageType.Integer:
                     return str(p.AsInteger())
+
                 elif p.StorageType == StorageType.Double:
                     return str(round(p.AsDouble(), 3))
+
                 elif p.StorageType == StorageType.ElementId:
                     return str(p.AsElementId().IntegerValue)
         except:
@@ -45,9 +88,11 @@ def get_param_value(el, nomes):
 
     return "-"
 
+
 def get_host(el):
     try:
         host_id = el.HostId
+
         if host_id and host_id != ElementId.InvalidElementId:
             return doc.GetElement(host_id)
     except:
@@ -61,8 +106,10 @@ def get_host(el):
 
     try:
         p = el.get_Parameter(BuiltInParameter.HOST_ID_PARAM)
+
         if p:
             host_id = p.AsElementId()
+
             if host_id and host_id != ElementId.InvalidElementId:
                 return doc.GetElement(host_id)
     except:
@@ -70,13 +117,16 @@ def get_host(el):
 
     return None
 
+
 def host_eh_categoria(host, categoria):
     if host is None:
         return False
+
     if host.Category is None:
         return False
 
     return host.Category.Id.IntegerValue == int(categoria)
+
 
 def get_marca_tipo_tela(el):
     try:
@@ -91,9 +141,11 @@ def get_marca_tipo_tela(el):
 
     return "-"
 
+
 # ===============================
 # AGRUPAMENTO
 # ===============================
+
 grupos = {}
 ignorados = []
 sem_dimensao = []
@@ -101,7 +153,7 @@ sem_dimensao = []
 for el in elements:
     host = get_host(el)
 
-    # mantém SOMENTE telas hospedadas em LAJES
+    # Mantém SOMENTE telas hospedadas em LAJES
     if not host_eh_categoria(host, CATEGORIA_DESEJADA):
         ignorados.append(el.Id)
         continue
@@ -130,10 +182,15 @@ for el in elements:
         "Comments"
     ])
 
-    # Lajes organizadas por Partição
     organizador = particao
 
-    chave = (organizador, marca_tipo_tela, particao, l_orig, c_orig)
+    chave = (
+        organizador,
+        marca_tipo_tela,
+        particao,
+        l_orig,
+        c_orig
+    )
 
     if chave not in grupos:
         grupos[chave] = {
@@ -144,11 +201,30 @@ for el in elements:
     grupos[chave]["folhas"].append(numero_folha)
     grupos[chave]["elementos"].append(el)
 
-grupos_ordenados = sorted(grupos.items(), key=lambda item: item[0])
+
+# Ordena os grupos por:
+# 1. Local / Partição
+# 2. Número da primeira folha
+# 3. Tipo de tela
+# 4. Largura
+# 5. Comprimento
+
+grupos_ordenados = sorted(
+    grupos.items(),
+    key=lambda item: (
+        item[0][0],
+        min([numero_da_folha(f) for f in item[1]["folhas"]]),
+        item[0][1],
+        item[0][3],
+        item[0][4]
+    )
+)
+
 
 # ===============================
 # DESENHO
 # ===============================
+
 COLUNAS_MAX = 5
 ESPACAMENTO = 3.0
 ESPACAMENTO_ENTRE_GRUPOS = 5.0
@@ -192,6 +268,7 @@ col_frt = FilteredElementCollector(doc).OfClass(FilledRegionType)
 for frt in col_frt:
     try:
         fp = frt.GetFillPattern()
+
         if fp and fp.IsSolidFill:
             filled_region_type = frt
             break
@@ -203,6 +280,7 @@ if filled_region_type is None:
         filled_region_type = col_frt.FirstElement()
     except:
         filled_region_type = None
+
 
 for chave, dados in grupos_ordenados:
 
@@ -249,7 +327,13 @@ for chave, dados in grupos_ordenados:
             curve_loop.Append(Line.CreateBound(p2, p3))
             curve_loop.Append(Line.CreateBound(p3, p4))
             curve_loop.Append(Line.CreateBound(p4, p1))
-            FilledRegion.Create(doc, filled_region_type.Id, nova_vista.Id, [curve_loop])
+
+            FilledRegion.Create(
+                doc,
+                filled_region_type.Id,
+                nova_vista.Id,
+                [curve_loop]
+            )
         except:
             pass
 
@@ -258,20 +342,25 @@ for chave, dados in grupos_ordenados:
     linha_sup = doc.Create.NewDetailCurve(nova_vista, Line.CreateBound(p3, p4))
     linha_esq = doc.Create.NewDetailCurve(nova_vista, Line.CreateBound(p4, p1))
 
-    doc.Create.NewDetailCurve(nova_vista, Line.CreateBound(p1, p3))
+    doc.Create.NewDetailCurve(
+        nova_vista,
+        Line.CreateBound(p1, p3)
+    )
 
     ponto_medio = p1.Add(p3).Multiply(0.5)
     angulo_diag = math.atan2(alt_desenho, larg_desenho)
 
-    folhas_unicas = sorted(set(folhas))
+    # Aqui está a correção principal:
+    # ordena N1, N2, N3... N10 corretamente
+    folhas_unicas = sorted(
+        set(folhas),
+        key=numero_da_folha
+    )
 
     folhas_texto = []
+
     for f in folhas_unicas:
-        f = str(f)
-        if f.upper().startswith("N"):
-            folhas_texto.append(f)
-        else:
-            folhas_texto.append("N" + f)
+        folhas_texto.append(formatar_folha(f))
 
     texto_folha = ", ".join(folhas_texto)
 
@@ -279,7 +368,13 @@ for chave, dados in grupos_ordenados:
     options_folha.HorizontalAlignment = HorizontalTextAlignment.Center
     options_folha.Rotation = angulo_diag
 
-    TextNote.Create(doc, nova_vista.Id, ponto_medio, texto_folha, options_folha)
+    TextNote.Create(
+        doc,
+        nova_vista.Id,
+        ponto_medio,
+        texto_folha,
+        options_folha
+    )
 
     texto_info = "Tipo de tela: {}\nLocal: {}\nQtd: {}".format(
         marca_tipo_tela,
@@ -307,7 +402,11 @@ for chave, dados in grupos_ordenados:
         XYZ(cursor_x + larg_desenho, cursor_y - 1.0, 0)
     )
 
-    doc.Create.NewDimension(nova_vista, linha_cota_larg, ref_array_larg)
+    doc.Create.NewDimension(
+        nova_vista,
+        linha_cota_larg,
+        ref_array_larg
+    )
 
     ref_array_alt = ReferenceArray()
     ref_array_alt.Append(linha_inf.GeometryCurve.Reference)
@@ -318,7 +417,11 @@ for chave, dados in grupos_ordenados:
         XYZ(cursor_x - 1.0, cursor_y + alt_desenho, 0)
     )
 
-    doc.Create.NewDimension(nova_vista, linha_cota_alt, ref_array_alt)
+    doc.Create.NewDimension(
+        nova_vista,
+        linha_cota_alt,
+        ref_array_alt
+    )
 
     for el in elementos_grupo:
         ids_processados.append(el.Id)
@@ -334,6 +437,7 @@ for chave, dados in grupos_ordenados:
         cursor_y -= altura_max_da_linha + ESPACAMENTO + 2.0
         altura_max_da_linha = 0.0
         contador_coluna = 0
+
 
 TransactionManager.Instance.TransactionTaskDone()
 
