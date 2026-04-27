@@ -133,8 +133,8 @@ def get_marca_tipo_tela(el):
 
 def arredondar_dimensao(valor):
     """
-    Arredonda a dimensão para evitar que medidas iguais
-    sejam separadas por pequenas diferenças decimais do Revit.
+    Evita separar peças que têm a mesma dimensão,
+    mas o Revit salva com pequenas diferenças decimais.
     """
     try:
         return round(float(valor), 4)
@@ -172,8 +172,8 @@ for el in elements:
         sem_dimensao.append(el.Id)
         continue
 
-    # Aqui é a correção principal
-    # Dimensões iguais entram no mesmo grupo
+    # CORREÇÃO:
+    # dimensões iguais entram no mesmo grupo
     l_grupo = arredondar_dimensao(l_orig)
     c_grupo = arredondar_dimensao(c_orig)
 
@@ -312,6 +312,9 @@ for chave, dados in grupos_ordenados:
 
     folhas = dados["folhas"]
     elementos_grupo = dados["elementos"]
+
+    # Agora essa quantidade soma todos os elementos
+    # que têm mesma dimensão, mesmo tipo e mesmo local
     quantidade = len(elementos_grupo)
 
     larg_desenho = c_orig
