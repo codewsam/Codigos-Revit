@@ -1,0 +1,4 @@
+[AdicionarCotas.pushbutton]
+title = Auto Cotas
+tooltip = Adiciona cotas de nivel, lineares e de grids automaticamente nas vistas selecionadas.
+author = AutoCotas Plugin
