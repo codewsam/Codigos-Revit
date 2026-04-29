@@ -1,4 +1,5 @@
 
+# -*- coding: utf-8 -*-
 __title__ = 'Criar\nTabelas'
 __author__ = 'Samuel PLUGIN'
  
@@ -13,6 +14,7 @@ from Autodesk.Revit.DB import (
     FilteredElementCollector, ViewSchedule,
     ScheduleSortGroupField, ScheduleSortOrder,
     ScheduleFilter, ScheduleFilterType,
+    ScheduleField,
     ElementId, Transaction, ScheduleSheetInstance, UV,
 )
 from Autodesk.Revit.DB import ViewSheet
@@ -20,6 +22,7 @@ from Autodesk.Revit.UI import TaskDialog
 import System.Windows as SW
 import System.Windows.Controls as SWC
 import System.Windows.Media as SWM
+import unicodedata
  
 doc   = __revit__.ActiveUIDocument.Document
 uidoc = __revit__.ActiveUIDocument
@@ -71,19 +74,53 @@ def get_nome_unico(nome_base):
 def get_field_by_name(sched, keyword):
     """Busca campo disponivel pela keyword (case-insensitive, match parcial)."""
     sd = sched.Definition
+    def _strip_accents(s):
+        try:
+            return u"".join(c for c in unicodedata.normalize('NFKD', unicode(s)) if not unicodedata.combining(c)).lower()
+        except:
+            try:
+                return unicode(s).lower()
+            except:
+                return (s or u"").lower()
+
+    kw_norm = _strip_accents(keyword)
     for sf in sd.GetSchedulableFields():
         try:
             n = sf.GetName(doc)
-            if keyword.lower() in n.lower():
+            if kw_norm in _strip_accents(n):
                 return sf
         except:
             pass
     return None
+
+def _strip_accents(s):
+    try:
+        return u"".join(c for c in unicodedata.normalize('NFKD', unicode(s)) if not unicodedata.combining(c)).lower()
+    except:
+        try:
+            return unicode(s).lower()
+        except:
+            return (s or u"").lower()
+
+def schedule_has_schedulable(sd, schedulable_sf):
+    try:
+        target = _strip_accents(schedulable_sf.GetName(doc))
+    except:
+        return False
+    for i in range(sd.GetFieldCount()):
+        try:
+            f = sd.GetField(i)
+            sf = f.GetSchedulableField()
+            if _strip_accents(sf.GetName(doc)) == target:
+                return True
+        except:
+            pass
+    return False
  
 # =====================================================================
 # CRIACAO DAS TABELAS
 # =====================================================================
-def criar_tabela(nome, cat_id_int, campos_sel, filtro_texto=None, campo_filtro_kw=None):
+def criar_tabela(nome, cat_id_int, campos_sel, filtro_texto=None, campo_filtro_kw=None, is_vergalhao=False):
     cat_id     = ElementId(cat_id_int)
     nome_final = get_nome_unico(nome)
     sched      = ViewSchedule.CreateSchedule(doc, cat_id)
@@ -100,10 +137,7 @@ def criar_tabela(nome, cat_id_int, campos_sel, filtro_texto=None, campo_filtro_k
             if primeiro_campo_id is None:
                 primeiro_campo_id = campo.FieldId
  
-    # Ordenar pelo primeiro campo (LOCAL)
-    if primeiro_campo_id:
-        sgf = ScheduleSortGroupField(primeiro_campo_id, ScheduleSortOrder.Ascending)
-        sd.AddSortGroupField(sgf)
+
  
     # Filtro opcional
     if filtro_texto and campo_filtro_kw:
@@ -117,7 +151,54 @@ def criar_tabela(nome, cat_id_int, campos_sel, filtro_texto=None, campo_filtro_k
                     break
             except:
                 pass
- 
+
+    # Agrupamento e agregacao para vergalhao
+    if is_vergalhao:
+        # tentar localizar o campo de POSIÇAO (várias variações)
+        pos_keywords = [u"numero do vergalhao", u"numero do vergalhão", u"numero", u"posicao", u"posição", u"pos", u"posicao (p)", u"posição (p)"]
+        pos_schedulable = None
+        for pk in pos_keywords:
+            pos_schedulable = get_field_by_name(sched, pk)
+            if pos_schedulable:
+                break
+
+        if pos_schedulable:
+            # adicionar o campo se ainda não existir na definição
+            try:
+                if not schedule_has_schedulable(sd, pos_schedulable):
+                    campo_pos = sd.AddField(pos_schedulable)
+                    try:
+                        campo_pos.ColumnHeading = u"POSIÇÃO (P)"
+                    except:
+                        pass
+            except:
+                pass
+
+            # localizar FieldId do campo de posicao
+            pos_field_id = None
+            for i in range(sd.GetFieldCount()):
+                try:
+                    f = sd.GetField(i)
+                    if _strip_accents(f.GetSchedulableField().GetName(doc)) == _strip_accents(pos_schedulable.GetName(doc)):
+                        pos_field_id = f.FieldId
+                        break
+                except:
+                    pass
+
+            if pos_field_id:
+                # agrupar por posicao (reduz linhas repetidas por posição)
+                sd.AddSortGroupField(ScheduleSortGroupField(pos_field_id, ScheduleSortOrder.Ascending))
+
+                # agregar (somar) campos numéricos quando agrupados
+                for i in range(sd.GetFieldCount()):
+                    try:
+                        f = sd.GetField(i)
+                        fname = _strip_accents(f.GetSchedulableField().GetName(doc))
+                        if any(k in fname for k in [u"quantidade", u"comprimento", u"peso", u"massa", u"comp total", u"comp. total"]):
+                            f.SetAggregate(1)  # 1 = Sum
+                    except:
+                        pass
+
     return sched, nome_final
  
 def inserir_na_folha(sched):
@@ -331,6 +412,7 @@ def main():
                     opcoes['campos_v'],
                     filtro_texto=opcoes['filtro'],
                     campo_filtro_kw=u"parti",
+                    is_vergalhao=True,
                 )
                 criadas.append(u"VERGALHOES: {}".format(nome))
                 if opcoes['na_folha']:
@@ -345,6 +427,7 @@ def main():
                     opcoes['campos_t'],
                     filtro_texto=opcoes['filtro'],
                     campo_filtro_kw=u"hospedeiro",
+                    is_vergalhao=False,
                 )
                 criadas.append(u"TELA SOLDADA: {}".format(nome))
                 if opcoes['na_folha']:
