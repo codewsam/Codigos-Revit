@@ -175,3 +175,121 @@ except Exception as e:
     forms.alert("Erro:\n{}".format(str(e)), exitscript=True)
 
 output.print_md("## Fim!")
+
+
+
+
+
+#=================================================
+#=================================================
+#=================================================
+#=================================================
+PROMPT
+#=================================================
+#=================================================
+#=================================================
+#=================================================
+
+
+## PRIMEIRO: CONECTE NO PROJETO DO REVIT 
+## Objetivo do Plugin
+
+Criar um plugin **SIMPLES** para pyRevit que permite ao usuário **colocar ferros (famílias estruturais)** nas paredes selecionadas no Revit.
+
+---
+
+## Contexto
+
+- **Software**: Revit com pyRevit
+- **Local**: Extensão "Samuel PLUGIN" na aba "Plugins"
+
+---
+
+## Versão 2.0 - FLUXO SIMPLIFICADO
+
+### Passo 1: Mostrar formulário COM TODAS as famílias estruturais do projeto
+- Usar `forms.ask_for_one_item()` com todos os Family Symbols disponíveis
+- Não filtrar por tipo (VIGA/PILAR) - mostrar tudo para o usuário escolher
+
+### Passo 2: pick de paredes
+- Usar `revit.pick_elements_by_category(BuiltInCategory.OST_Walls)`
+- Simples e direto
+
+### Passo 3: Inserir família no centro de cada parede
+- Calcular o ponto central da curva de localização da parede
+- Usar método simples de inserção
+- Código deve ser mínimo e funcional
+
+---
+
+## Código Simplificado (Referência)
+
+```python
+# 1. Coletar TODOS os Family Symbols do projeto
+family_symbols = {}
+collector = FilteredElementCollector(doc).OfClass(FamilySymbol)
+
+for fs in collector:
+    try:
+        if fs.Category:
+            cat_id = fs.Category.Id.IntegerValue
+            if cat_id in [int(BuiltInCategory.OST_StructuralFraming), 
+                         int(BuiltInCategory.OST_StructuralColumns)]:
+                nome = fs.get_Parameter(BuiltInParameter.ALL_MODEL_TYPE_NAME).AsString()
+                if nome:
+                    family_symbols[nome] = fs
+    except:
+        pass
+
+# 2. pick paredes
+with forms.WarningBar(title="Selecione as paredes"):
+    walls = revit.pick_elements_by_category(BuiltInCategory.OST_Walls)
+
+# 3. Inserir em cada parede
+with Transaction(doc, "Inserir Ferro") as t:
+    t.Start()
+    for wall in walls:
+        curva = wall.Location.Curve
+        ponto = curva.GetEndPoint(0).Add(curva.GetEndPoint(1)).Multiply(0.5)
+        doc.Create.NewFamilyInstance(ponto, family_symbol, wall, StructuralType.Column)
+    t.Commit()
+```
+
+---
+
+## Regras Importantes
+
+3. Não tentar fazer join automaticamente (pode causar erros)
+4. Mostrar mensagens claras de sucesso/erro
+5.
+
+---
+
+## Título e Descrição do Plugin
+
+- **Título**: "Reforço de Parede"
+- **Descrição**: "Selecione paredes e insira famílias estruturais automaticamente"
+
+---
+
+## Bibliotecas a Importar
+
+```python
+import clr
+import os
+clr.AddReference("System")
+
+from Autodesk.Revit.DB import *
+from Autodesk.Revit.UI import *
+from pyrevit import forms, revit, script
+from System.Collections.Generic import List
+
+doc   = __revit__.ActiveUIDocument.Document
+uidoc = __revit__.ActiveUIDocument
+app   = __revit__.Application
+
+
+qualquer duvida diga 
+
+
+
