@@ -232,3 +232,10 @@ out.print_md("## Concluído")
 out.print_md("- Barras criadas: {}".format(ok))
 out.print_md("- Erros: {}".format(err))
 forms.alert("Concluído!\n\nBarras criadas: {}\nErros: {}".format(ok, err), warn_icon=False)
+
+
+
+esse primeiro é como ta ficando e o segundo é como quero que fique
+oq ta fazendo isso da errado? to colocando valor errado?
+
+vc consegue identificar o tamanho da jenela/porta e colocar para mim ?
