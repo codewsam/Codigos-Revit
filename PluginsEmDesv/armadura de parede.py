@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 __title__ = "Reforço de Parede"
 __author__ = "Samuel"
-__version__ = "Versão 6.6"
+__version__ = "Versão 6.6 - debug diagonal"
 
 import clr
+import math
 clr.AddReference("System")
 
 from Autodesk.Revit.DB import *
@@ -13,15 +14,21 @@ from System.Collections.Generic import List
 
 doc = __revit__.ActiveUIDocument.Document
 
+# =============================
+# SEGURANÇA: NÃO SOBRESCREVER XYZ
+
+
 CM_TO_FT = 1.0 / 30.48
 
 def cm_to_ft(v):
     return float(v) * CM_TO_FT
 
 def ask_float(prompt, default_val):
-    txt = forms.ask_for_string(default=str(default_val),
-                               prompt=prompt,
-                               title="Reforço de Parede")
+    txt = forms.ask_for_string(
+        default=str(default_val),
+        prompt=prompt,
+        title="Reforço de Parede"
+    )
     if not txt:
         script.exit()
     try:
@@ -79,6 +86,17 @@ edge_ext = cm_to_ft(ask_float("Extensão horizontal além da abertura (cm)", 30)
 vert_ext = cm_to_ft(ask_float("Extensão vertical além da abertura (cm)", 30))
 diag_len = cm_to_ft(ask_float("Comprimento diagonal (cm)", 40))
 
+# =========================================================
+# 🔥 CONTROLE DE ROTAÇÃO DAS DIAGONAIS (TESTE AQUI)
+# =========================================================
+diag_angle = 90  # 👈 MUDE AQUI: 0, 45, 90, 180 etc.
+# =========================================================
+
+def rotate_vector(vec, axis, angle_deg):
+    """Rotaciona vetor ao redor de um eixo (normal da parede)"""
+    t = Transform.CreateRotation(axis, math.radians(angle_deg))
+    return t.OfVector(vec)
+
 with Transaction(doc, "Reforço de Aberturas v6.6") as t:
     t.Start()
 
@@ -109,9 +127,11 @@ with Transaction(doc, "Reforço de Aberturas v6.6") as t:
             z0 = bb.Min.Z + cover
             z1 = bb.Max.Z - cover
 
-            mid = XYZ((bb.Min.X + bb.Max.X) * 0.5,
-                      (bb.Min.Y + bb.Max.Y) * 0.5,
-                      (bb.Min.Z + bb.Max.Z) * 0.5)
+            mid = XYZ(
+                (bb.Min.X + bb.Max.X) * 0.5,
+                (bb.Min.Y + bb.Max.Y) * 0.5,
+                (bb.Min.Z + bb.Max.Z) * 0.5
+            )
 
             proj = curve.Project(mid)
             if not proj:
@@ -130,7 +150,9 @@ with Transaction(doc, "Reforço de Aberturas v6.6") as t:
             left_ext = left_face - axis.Multiply(edge_ext)
             right_ext = right_face + axis.Multiply(edge_ext)
 
-            # ===== VERTICAIS =====
+            # =========================
+            # VERTICAIS
+            # =========================
             create_rebar(wall, bar_type, normal,
                          XYZ(left_face.X, left_face.Y, z0 - vert_ext),
                          XYZ(left_face.X, left_face.Y, z1 + vert_ext))
@@ -139,7 +161,9 @@ with Transaction(doc, "Reforço de Aberturas v6.6") as t:
                          XYZ(right_face.X, right_face.Y, z0 - vert_ext),
                          XYZ(right_face.X, right_face.Y, z1 + vert_ext))
 
-            # ===== HORIZONTAIS =====
+            # =========================
+            # HORIZONTAIS
+            # =========================
             create_rebar(wall, bar_type, XYZ.BasisZ,
                          XYZ(left_ext.X, left_ext.Y, z0),
                          XYZ(right_ext.X, right_ext.Y, z0))
@@ -150,23 +174,41 @@ with Transaction(doc, "Reforço de Aberturas v6.6") as t:
 
             half = diag_len * 0.5
 
-            # ===== 4 DIAGONAIS =====
+            # =========================
+            # 🔥 DIAGONAIS (AQUI VOCÊ GIRA)
+            # =========================
+
+            base_vectors = [
+                axis - XYZ.BasisZ,
+                -axis - XYZ.BasisZ,
+                axis + XYZ.BasisZ,
+                -axis + XYZ.BasisZ
+            ]
 
             points = [
-                (XYZ(left_face.X, left_face.Y, z1),  axis - XYZ.BasisZ),  # sup esquerda
-                (XYZ(right_face.X, right_face.Y, z1), -axis - XYZ.BasisZ), # sup direita
-                (XYZ(left_face.X, left_face.Y, z0),  axis + XYZ.BasisZ),  # inf esquerda
-                (XYZ(right_face.X, right_face.Y, z0), -axis + XYZ.BasisZ) # inf direita
+                (XYZ(left_face.X, left_face.Y, z1),  base_vectors[0]),
+                (XYZ(right_face.X, right_face.Y, z1), base_vectors[1]),
+                (XYZ(left_face.X, left_face.Y, z0),  base_vectors[2]),
+                (XYZ(right_face.X, right_face.Y, z0), base_vectors[3])
             ]
 
             for pt, vec in points:
                 direction = vec.Normalize()
+
+                # =====================================================
+                # 🔥 AQUI ESTÁ A ROTAÇÃO DA DIAGONAL
+                # =====================================================
+                # Troque diag_angle para testar:
+                # 0   -> padrão
+                # 90  -> gira 90 graus
+                # 180 -> inverte
+                # =====================================================
+                direction = rotate_vector(direction, normal, diag_angle)
+
                 start_pt = pt - direction.Multiply(half)
                 end_pt   = pt + direction.Multiply(half)
 
-                create_rebar(wall, bar_type, normal,
-                             start_pt,
-                             end_pt)
+                create_rebar(wall, bar_type, normal, start_pt, end_pt)
 
     t.Commit()
 
