@@ -639,3 +639,54 @@ nessa parte pode deixar selecionado automaticamente a unica opçaõ que aparece�
 
 
 retira a parte de gancho
+
+
+
+
+conecta no revit
+
+
+```python
+
+Você é especialista em Revit API e pyRevit. Crie um script Python completo para pyRevit que automatize a criação de 'folha de tela soldada' (AreaReinforcement - welded wire mesh sheets) em paredes selecionadas no Revit.
+
+Passos manuais para referência (a automatizar):
+
+Seleciona a parede.
+Area de folha de tela soldada > retângulo.
+Seleciona a parede inteira (linha de limite/boundary).
+Escolho a direção principal (horizontal/vertical).
+Concluir modo de edição.
+Requisitos do script:
+
+me recomende oq é melhor para automatizar isso, considerando as limitações da API e a complexidade do processo (ex: uso de AreaReinforcement.Create vs Sketch API, necessidade de tipos pré-carregados, etc).
+
+Baseie no estilo destes scripts pyRevit existentes [cole aqui os conteúdos dos arquivos para contexto]:
+script.py de 'Folha de Tela' (template com seleção de tipo, pick elements, boundaries, transaction, counters).
+script.py de 'Reforço' (seleção de paredes OST_Walls, cálculo de posições/normais/offsets, criação múltipla de elementos estruturais como Rebar.CreateFromCurves, inputs usuário, front/back faces).
+UI/Inputs:
+Liste e selecione AreaReinforcementType (filtre structural, similar a FloorType picker).
+Inputs: tamanho folha (largura/altura m, default 2.4x1.2?), overlap/transpasse (cm, default 5-10cm), direção principal (H/V dropdown), cobertura (cm).
+Lógica principal (por parede selecionada):
+Pick walls via revit.pick_elements_by_category(OST_Walls), suporte múltiplas.
+Por parede: Pegue LocationCurve para direção/comprimento, base/top levels para altura.
+Calcule layout de painéis: Divida comprimento/altura em painéis com overlap (ex: posição inicial bottom-left, avance por width-overlap ao longo da parede).
+Por painel: Crie CurveLoop retangular (Line.CreateBound para 4 lados baseado em bounds projetados).
+Crie AreaReinforcement: Use AreaReinforcement.Create(doc, wall.Id, type.Id, level.Id, major_dir_vector), ou Sketch API se necessário. Coloque múltiplos painéis.
+Suporte direção principal (major_dir = wall_axis ou perpendicular).
+Handle normals/offsets como em Reforço (frente da parede).
+Transpasse/overlaps: Essencial—calcule precisamente para evitar gaps/overlaps excessivos (adicione overlap em cada junção de painéis).
+Transaction, errors, counters, forms.alert resumo como nos exemplos.
+Atualize title='Folha de Tela Soldada', doc adequado.
+Seja sincero sobre limitações:
+
+API AreaReinforcement precisa de type pré-carregado.
+Não auto-sketch completo; use Create overloads.
+Teste em Revit 2022+; paredes retas (não curvas).
+Melhor que manual, mas valide overlaps visualmente.
+Gere o código completo e executável, pronto para colar em script.py. Explique mudanças.
+
+Cole os conteúdos dos scripts.py nos [ ] para contexto perfeito. Teste o output do Claude no Revit e me diga se precisa ajustes!
+
+Comando para testar: Abra pyRevit no Revit, clique o botão 'Folha de Tela' após colar.
+```
