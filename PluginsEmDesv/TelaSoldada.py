@@ -600,3 +600,42 @@ def main():
 # ──────────────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
     main()
+
+
+
+
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+na area de selecionar tem que ser com os tipos folha de tela soldada 
+
+
+
+exemplo q92(2,45x6,00)
+
+
+
+   if not art_dict:
+        forms.alert(
+            "Nenhum AreaReinforcementType encontrado no projeto.\n"
+            "Carregue um tipo de Armadura de Área antes de usar este script.",
+            title="Folha de Tela Soldada",
+            exitscript=True
+        )
+        return None
+
+    art_name = forms.SelectFromList.show(
+        sorted(art_dict.keys()),
+        title="Selecione o Tipo de Armadura de Área",
+        multiselect=False
+    )
+
+nessa parte pode deixar selecionado automaticamente a unica opçaõ que aparece 
+
+
+
+retira a parte de gancho
