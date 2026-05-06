@@ -127,4 +127,13 @@ msg = u"Tela Soldada aplicada!\n\nParedes: {}/{}\nTipo: {}\nFolha: {}".format(
 if erros:
     msg += u"\n\nErros:\n" + u"\n".join(erros)
 
+
+
+
+
+
+ta quase perfeito, quero só que altere um detalhe só precisa perguntar o fabric_area_type, o fabric_sheet_type tem que ser o mesmo do fabric_area_type, ou seja, não precisa perguntar, só pegar o id do fabric_sheet_type do fabric_area_type selecionado, ai já era, ai é só criar a folha de tela soldada com os ids selecionados
+outra coisa: quando adicionar, coloca um deslocamento adicional da recobrimento de 22mm
+e por ultimo: pergunta se quer um transpasse (para cima) a partir do limite da parede e quantos cm quer de transpasse, ai se quiser  
+
 forms.alert(msg, warn_icon=bool(erros), title="Folha de Tela")
