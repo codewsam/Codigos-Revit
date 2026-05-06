@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 __title__   = "Folha de Tela"
 __author__  = "Samuel"
-__version__ = "Versão 1.2 - básico bem feito"
+__version__ = "Versão 1.2.1 - básico bem feito"
 
 import clr
 clr.AddReference('RevitAPI')
