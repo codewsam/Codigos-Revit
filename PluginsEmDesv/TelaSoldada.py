@@ -22,9 +22,9 @@ fat_list = list(FilteredElementCollector(doc).OfClass(FabricAreaType).ToElements
 fst_list = list(FilteredElementCollector(doc).OfClass(FabricSheetType).ToElements())
 
 if not fat_list:
-    forms.alert("Nenhum FabricAreaType encontrado no projeto.", exitscript=True)
+    forms.alert("Nenhum (FabricAreaType) encontrado no projeto.", exitscript=True)
 if not fst_list:
-    forms.alert("Nenhum FabricSheetType encontrado no projeto.", exitscript=True)
+    forms.alert("Nenhum (FabricSheetType) encontrado no projeto.", exitscript=True)
 
 def get_name(el):
     p = el.get_Parameter(BuiltInParameter.ALL_MODEL_TYPE_NAME)
@@ -38,7 +38,7 @@ fst_map = {get_name(t): t for t in fst_list}
 # ──────────────────────────────────────────────────────────────
 fat_name = forms.SelectFromList.show(
     sorted(fat_map.keys()),
-    title="Selecione o Tipo de Área de Tela Soldada",
+    title="Seleciona aquele X do centro (???)",
     multiselect=False
 )
 if not fat_name:
@@ -52,7 +52,7 @@ fabric_area_type_id = fabric_area_type.Id
 # ──────────────────────────────────────────────────────────────
 fst_name = forms.SelectFromList.show(
     sorted(fst_map.keys()),
-    title="Selecione a Folha de Tela Soldada",
+    title="Seleciona o restante (???)",
     multiselect=False
 )
 if not fst_name:
