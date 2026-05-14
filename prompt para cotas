@@ -1,0 +1,105 @@
+SCRIPT PYREVIT — 18 ETAPAS
+===========================================================
+
+Linguagem: Python (pyRevit / IronPython 2)
+Import padrão: from Autodesk.Revit.DB import *
+
+Imports necessários:
+- from Autodesk.Revit.DB import *
+- from System.Collections.Generic import *
+- from pyRevit import revit import *
+
+Crie um script pyRevit completo em Python que execute as seguintes etapas em ordem:
+
+ETAPA 1 — Início
+- Criar um script pyRevit chamado 'Cotas Automáticas de Famílias': O Objetivo é inserir cotas de forma automática em famílias da vista ativa
+
+ETAPA 2 — Buscar por Múltiplas Categorias
+- Buscar elementos das categorias [Electrical Fixtures e Lighting Devices] no Documento Ativo usando ElementMulticategoryFilter com uma List[BuiltInCategory] tipada e WherePasses(). Converter cada categoria informada para o BuiltInCategory correspondente (ex: Paredes → OST_Walls).
+    API: Classe: ElementMulticategoryFilter
+    API: Método: WherePasses
+
+ETAPA 3 — Obter Orientação da Família
+- Obter o vetor de orientação frontal da instância usando element.FacingOrientation. Retorna um XYZ normalizado indicando para onde a família está 'olhando'. Se necessário, verificar se o elemento é uma FamilyInstance antes de acessar a propriedade.
+    API: Classe: FamilyInstance
+    API: Método: FacingOrientation
+
+ETAPA 4 — Seleção Simples com Filtro
+- Pedir ao usuário para selecionar um único elemento da categoria Links Revit usando pick_revit_element_by_category(BuiltInCategory.Links Revit)
+    API: Classe: pick_revit_element_by_category
+    API: Método: BuiltInCategory
+
+ETAPA 5 — Obter Localização da Família
+- Obter a localização do elemento usando element.Location. Verificar o tipo: se isinstance(element.Location, LocationPoint), retornar element.Location.Point (XYZ). Se isinstance(element.Location, LocationCurve), retornar element.Location.Curve (Line/Arc). Se element.Location for None ou não for nenhum dos dois, retornar None e registrar aviso.
+    API: Classe: Location
+    API: Método: LocationPoint / LocationCurve
+
+ETAPA 6 — Buscar Elementos por Categoria
+- Buscar todos os elementos da categoria Ambientes no Documento Ativo
+    API: Classe: FilteredElementCollector
+    API: Método: OfCategory
+
+ETAPA 7 — Criar Linha
+- Criar uma linha usando Line.CreateBound(Ponto XYZ (recebido ou definido), usar a localização da família + orientação * 30cm). Se os pontos vierem de blocos anteriores, usá-los diretamente como XYZ.
+    API: Classe: Line
+    API: Método: CreateBound()
+
+ETAPA 8 — Obter Sólido da Família
+- Extrair o sólido (Solid) da geometria do elemento usando Options() com ComputeReferences = True e DetailLevel = Fine
+    API: Classe: get_Geometry
+    API: Método: Options()
+
+ETAPA 9 — Personalizado
+- verificar conflito
+
+ETAPA 10 — Personalizado
+- agrupa as famílias por ambiente do link
+
+ETAPA 11 — Personalizado
+- agrupa cada grupo por orientação
+
+ETAPA 12 — Referência por Nome
+- Obter referência da família pelo nome 'Center (Left/Right)' usando family.GetReferenceByName('Center (Left/Right)')
+    API: Classe: family
+    API: Método: GetReferenceByName()
+
+ETAPA 13 — Obter Localização da Família
+- Obter a localização do elemento usando element.Location. Verificar o tipo: se isinstance(element.Location, LocationPoint), retornar element.Location.Point (XYZ). Se isinstance(element.Location, LocationCurve), retornar element.Location.Curve (Line/Arc). Se element.Location for None ou não for nenhum dos dois, retornar None e registrar aviso.
+    API: Classe: Location
+    API: Método: LocationPoint / LocationCurve
+
+ETAPA 14 — Obter Orientação da Família
+- Obter o vetor de orientação frontal da instância usando element.FacingOrientation. Retorna um XYZ normalizado indicando para onde a família está 'olhando'. Se necessário, verificar se o elemento é uma FamilyInstance antes de acessar a propriedade.
+    API: Classe: FamilyInstance
+    API: Método: FacingOrientation
+
+ETAPA 15 — Criar Linha
+- Criar uma linha usando Line.CreateBound(Ponto XYZ (recebido ou definido), ponto de localização projetado pela orientação da família). Se os pontos vierem de blocos anteriores, usá-los diretamente como XYZ.
+    API: Classe: Line
+    API: Método: CreateBound()
+
+ETAPA 16 — Personalizado
+- projeta vetores nos lados esquerdo e direito em relação a linha
+
+ETAPA 17 — Obter Elementos por Raio Projetado
+- Projetar um raio a partir do ponto de origem recebido na direção do vetor recebido usando ReferenceIntersector. Configurar o filtro: se categoria = 'Todas', usar apenas ElementIsNotElementTypeFilter; caso contrário, usar ElementCategoryFilter(BuiltInCategory.OST_...). Definir FindReferenceTarget de acordo com 'Face': 'Face' → FindReferenceTarget.Face, 'Elemento' → FindReferenceTarget.Element, 'Tipo de Elemento' → FindReferenceTarget.ElementType. Obter uma View3D válida (doc.ActiveView se for 3D, ou buscar a primeira View3D disponível). Instanciar ref_intersector = ReferenceIntersector(filtro, alvo, view3d). Executar ref_intersector.FindNearest(ponto_origem, vetor_direcao). Retornar o ReferenceWithContext encontrado (contém .GetReference() e .Proximity). Se nenhum elemento for encontrado, retornar None.
+    API: Classe: ReferenceIntersector
+    API: Método: FindNearest()
+
+ETAPA 18 — Inserir uma Cota
+- Antes de montar o ReferenceArray, filtrar referências coincidentes: para cada elemento do grupo, obter seu LocationPoint e comparar com os pontos já adicionados usando distância euclidiana no plano XY — se a distância for menor que uma tolerância de 2 cm (convertida com UnitUtils.ConvertToInternalUnits), ignorar o elemento e não adicionar sua referência. Somente após o filtro, unir as referências restantes de 'Referências obtidas na etapa anterior' em um único ReferenceArray (iterando com ref_array.Append(ref) para cada referência), depois criar UMA ÚNICA cota do tipo 'Último tipo utilizado' usando doc.Create.NewDimension(view, line, ref_array), onde 'line' é obtida de 'Linha Perpendicular à orientação de uma única Família'
+    API: Classe: doc.Create
+    API: Método: NewDimension()
+
+============================================================
+Requisitos:
+- Inicie o script OBRIGATORIAMENTE com este cabeçalho:
+    # -*- coding: utf-8 -*-
+    __title__ = "Use o nome do script da ETAPA de Início. Se não houver essa etapa, crie um nome para o script"
+    __version__ = "1.0"
+    __doc__ = "[Gere uma descrição curta do que a ferramenta faz, baseada nas etapas acima]"
+
+- Use Transaction para qualquer modificação no modelo
+- Todas as importações necessárias listadas (Revit e pyRevit)
+- Adicione comentários explicando cada etapa no código
+- Trate possíveis erros com try/except
