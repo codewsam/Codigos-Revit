@@ -167,6 +167,63 @@ for wall in walls:
 output.print_md("**Referencias horizontais:** {}".format(len(refs_h)))
 
 # ============================================================
+# ETAPA 8b — Obter referencias de faces laterais (normal Up)
+# ============================================================
+def get_face_refs_up(wall):
+    opt = Options()
+    opt.ComputeReferences = True
+    opt.View = view
+    geom = wall.get_Geometry(opt)
+    ref_neg = None
+    ref_pos = None
+    for g in geom:
+        if isinstance(g, Solid):
+            for face in g.Faces:
+                if face.Reference is None:
+                    continue
+                # CylindricalFace e outras faces curvas nao tem FaceNormal
+                if not isinstance(face, PlanarFace):
+                    continue
+                n = face.FaceNormal
+                d_u = dot(n, up)
+                if d_u > 0.8 and ref_pos is None:
+                    ref_pos = face.Reference
+                elif d_u < -0.8 and ref_neg is None:
+                    ref_neg = face.Reference
+    return ref_neg, ref_pos
+
+# ============================================================
+# ETAPA 9b — Coletar refs verticais (faces com normal Up)
+# de todas as paredes, filtrando coincidentes
+# ============================================================
+refs_v = []
+pts_v  = []
+
+for wall in walls:
+    orient, d, p0, p1 = classify_wall(wall)
+    if orient is None:
+        continue
+
+    # Para cotas verticais, o agrupamento final é feito pelas faces alinhadas ao vetor Up.
+    ref_neg, ref_pos = get_face_refs_up(wall)
+
+    # Deduplicacao no eixo Right (na "linha" da cota vertical)
+    pt_low   = p0 if dot(p0, right) <= dot(p1, right) else p1
+    pt_high  = p1 if pt_low == p0 else p0
+
+    if ref_neg is not None:
+        if not any(pts_close(pt_low, ep) for ep in pts_v):
+            refs_v.append(ref_neg)
+            pts_v.append(pt_low)
+
+    if ref_pos is not None:
+        if not any(pts_close(pt_high, ep) for ep in pts_v):
+            refs_v.append(ref_pos)
+            pts_v.append(pt_high)
+
+output.print_md("**Referencias verticais:** {}".format(len(refs_v)))
+
+# ============================================================
 # ETAPA 15/16 — Construir linha de cota horizontal
 # Linha ao longo de Right, posicionada no Z medio das paredes
 # ============================================================
@@ -198,6 +255,52 @@ def build_dim_line_h(pts, offset_cm=60.0):
     return Line.CreateBound(pt1, pt2)
 
 # ============================================================
+# ETAPA 15c/16c — Construir linha de cota vertical
+# Linha ao longo de Up, posicionada no Y medio das paredes
+# deslocada +offset na direcao Right
+# ============================================================
+def build_dim_line_v(pts, offset_cm=60.0):
+    if not pts:
+        return None
+    offset_ft = to_ft(offset_cm)
+
+    u_vals = [dot(p, up) for p in pts]
+    u_min  = min(u_vals) - to_ft(30)
+    u_max  = max(u_vals) + to_ft(30)
+
+    # Posicao base: media dos pontos
+    x_avg = sum(p.X for p in pts) / len(pts)
+    y_avg = sum(p.Y for p in pts) / len(pts)
+    z_avg = sum(p.Z for p in pts) / len(pts)
+
+    # Linha paralela ao Up, deslocada +offset na direcao Right
+    def make_pt(u_val):
+        return XYZ(
+            right.X * (dot(XYZ(x_avg, y_avg, z_avg), right) + offset_ft) + up.X * u_val,
+            right.Y * (dot(XYZ(x_avg, y_avg, z_avg), right) + offset_ft) + up.Y * u_val,
+            right.Z * (dot(XYZ(x_avg, y_avg, z_avg), right) + offset_ft) + up.Z * u_val
+        )
+
+    # Como o calculo acima pode introduzir pequenas inconsistencias,
+    # fazemos um fallback mais simples caso a linha fique degenerada.
+    pt1 = make_pt(u_min)
+    pt2 = make_pt(u_max)
+
+    if pt1.DistanceTo(pt2) < 1e-6:
+        # fallback: deslocar pelo vetor Right diretamente usando um ponto medio
+        mid = XYZ(x_avg, y_avg, z_avg)
+        mid_off = XYZ(mid.X + right.X * offset_ft, mid.Y + right.Y * offset_ft, mid.Z + right.Z * offset_ft)
+        # reconstruir pt1/pt2 no plano usando mid_off como origem
+        base_u = dot(mid_off, up)
+        pt1 = XYZ(mid_off.X + up.X * (u_min - base_u), mid_off.Y + up.Y * (u_min - base_u), mid_off.Z + up.Z * (u_min - base_u))
+        pt2 = XYZ(mid_off.X + up.X * (u_max - base_u), mid_off.Y + up.Y * (u_max - base_u), mid_off.Z + up.Z * (u_max - base_u))
+
+    if pt1.DistanceTo(pt2) < 1e-6:
+        return None
+
+    return Line.CreateBound(pt1, pt2)
+
+# ============================================================
 # ETAPA 18 — Criar cotas com NewDimension
 # ============================================================
 dim_type = None
@@ -214,6 +317,9 @@ errors       = 0
 with Transaction(doc, "Cotas Automaticas de Paredes") as t:
     t.Start()
     try:
+        # -------------------------
+        # Cotas horizontais (Right)
+        # -------------------------
         if len(refs_h) >= 2:
             dim_line_h = build_dim_line_h(pts_h, offset_cm=60.0)
             if dim_line_h:
@@ -236,6 +342,32 @@ with Transaction(doc, "Cotas Automaticas de Paredes") as t:
                 output.print_md("Linha horizontal invalida.")
         else:
             output.print_md("Menos de 2 referencias horizontais, pulando.")
+
+        # -------------------------
+        # Cotas verticais (Up)
+        # -------------------------
+        if len(refs_v) >= 2:
+            dim_line_v = build_dim_line_v(pts_v, offset_cm=60.0)
+            if dim_line_v:
+                ref_array_v = ReferenceArray()
+                for r in refs_v:
+                    ref_array_v.Append(r)
+                try:
+                    new_dim = doc.Create.NewDimension(view, dim_line_v, ref_array_v)
+                    if dim_type:
+                        try:
+                            new_dim.DimensionType = dim_type
+                        except:
+                            pass
+                    dims_created += 1
+                    output.print_md("Cota vertical criada com {} referencias".format(ref_array_v.Size))
+                except Exception as e:
+                    errors += 1
+                    output.print_md("Erro cota vertical: {}".format(str(e)))
+            else:
+                output.print_md("Linha vertical invalida.")
+        else:
+            output.print_md("Menos de 2 referencias verticais, pulando.")
 
         t.Commit()
 
