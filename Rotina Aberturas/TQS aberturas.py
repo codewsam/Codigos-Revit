@@ -1,28 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-TQS Aberturas → Portas e Janelas
+TQS Aberturas -> Portas e Janelas
 =================================
-Converte Wall Openings importadas do TQS em famílias de Porta ou Janela.
-
-Regra de classificação:
-  - Base <= 5 cm  → PORTA  (abertura toca o chão)
-  - Base >  5 cm  → JANELA (abertura suspensa)
-
-Todas as openings são processadas, independente do tamanho.
+Regras de classificacao:
+  - Suspensa (base > 5cm)                        -> JANELA (sempre, qualquer tamanho)
+  - Toca o chao (base <= 5cm) + largura < 100cm  -> PORTA
+  - Toca o chao (base <= 5cm) + largura >= 100cm -> mantém como Opening (vao grande)
 
 Autor: Samuel PLUGIN
 """
 
 # ==============================================================================
-# CONFIGURAÇÕES
+# CONFIGURACOES
 # ==============================================================================
 NOME_FAMILIA_PORTA  = "Abertura de porta"
 NOME_FAMILIA_JANELA = "Abertura de Janela"
 
-LIMIAR_PORTA_CM = 5.0   # base <= este valor → PORTA, senão → JANELA
+LIMIAR_PORTA_CM  = 5.0    # base <= este valor -> considera que toca o chao
+LIMIAR_GRANDE_CM = 100.0  # largura >= este valor + toca chao -> manter como Opening
 
-DELETAR_OPENING = True  # deleta a Wall Opening após inserir a família
-ADICIONAR_PARAM = True  # adiciona parâmetro "Classificacao Automatica"
+DELETAR_OPENING = True
+ADICIONAR_PARAM = True
 
 # ==============================================================================
 # IMPORTS
@@ -44,7 +42,7 @@ CM_TO_FT = 1.0 / 30.48
 FT_TO_CM = 30.48
 
 # ==============================================================================
-# FUNÇÕES AUXILIARES
+# FUNCOES
 # ==============================================================================
 
 def get_family_symbol(nome_familia):
@@ -121,10 +119,11 @@ def main():
 
     print("Wall Openings encontradas: {}".format(len(openings)))
 
-    portas   = []
-    janelas  = []
-    falhas   = []
-    deletar  = []
+    portas  = []
+    janelas = []
+    grandes = []
+    falhas  = []
+    deletar = []
 
     t = Transaction(doc, "TQS: Converter Aberturas em Portas/Janelas")
     t.Start()
@@ -141,15 +140,27 @@ def main():
                 continue
 
             largura_ft, altura_ft, base_ft, ponto = dados
-            base_cm = base_ft * FT_TO_CM
+            largura_cm = largura_ft * FT_TO_CM
+            base_cm    = base_ft    * FT_TO_CM
 
-            # Classificação: toca o chão → PORTA, suspensa → JANELA
-            if base_cm <= LIMIAR_PORTA_CM:
-                classificacao = "PORTA"
-                sym = sym_porta
-            else:
+            toca_chao = base_cm <= LIMIAR_PORTA_CM
+
+            # --- REGRA 1: suspensa -> sempre JANELA ---
+            if not toca_chao:
                 classificacao = "JANELA"
                 sym = sym_janela
+
+            # --- REGRA 2: toca chao + grande -> preservar como Opening ---
+            elif largura_cm >= LIMIAR_GRANDE_CM:
+                grandes.append(
+                    "ID:{} | L:{:.0f}cm | A:{:.0f}cm | Base:{:.0f}cm | mantida como Opening (vao grande)".format(
+                        op_id, largura_cm, altura_ft * FT_TO_CM, base_cm))
+                continue
+
+            # --- REGRA 3: toca chao + normal -> PORTA ---
+            else:
+                classificacao = "PORTA"
+                sym = sym_porta
 
             host = op.Host
             if host is None:
@@ -169,7 +180,6 @@ def main():
                     Structure.StructuralType.NonStructural
                 )
 
-                # Offset de soleira/peitoril
                 for bip in [BuiltInParameter.INSTANCE_SILL_HEIGHT_PARAM,
                              BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM]:
                     p = inst.get_Parameter(bip)
@@ -185,9 +195,8 @@ def main():
                 if DELETAR_OPENING:
                     deletar.append(op.Id)
 
-                info = "ID:{} → {} | L:{:.1f}cm | A:{:.1f}cm | Base:{:.1f}cm".format(
-                    op_id, classificacao, largura_ft * FT_TO_CM,
-                    altura_ft * FT_TO_CM, base_cm)
+                info = "ID:{} -> {} | L:{:.0f}cm | A:{:.0f}cm | Base:{:.0f}cm".format(
+                    op_id, classificacao, largura_cm, altura_ft * FT_TO_CM, base_cm)
 
                 if classificacao == "PORTA":
                     portas.append(info)
@@ -211,14 +220,15 @@ def main():
         print("ERRO CRITICO - transacao revertida: " + str(ex))
         return
 
-    # Relatório
     print("\n========== RESULTADO ==========")
-    print("Portas criadas  : {}".format(len(portas)))
-    for x in portas:  print("  + " + x)
-    print("Janelas criadas : {}".format(len(janelas)))
-    for x in janelas: print("  + " + x)
-    print("Falhas          : {}".format(len(falhas)))
-    for x in falhas:  print("  ! " + x)
+    print("Portas criadas    : {}".format(len(portas)))
+    for x in portas:   print("  + " + x)
+    print("Janelas criadas   : {}".format(len(janelas)))
+    for x in janelas:  print("  + " + x)
+    print("Grandes (mantidas): {}".format(len(grandes)))
+    for x in grandes:  print("  ~ " + x)
+    print("Falhas            : {}".format(len(falhas)))
+    for x in falhas:   print("  ! " + x)
     print("================================")
 
 main()
