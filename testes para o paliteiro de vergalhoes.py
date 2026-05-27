@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """
 PLUGIN: Paliteiro
-VERSAO: 2.0
-AUTOR: ChatGPT
+VERSAO: 2.1
 COMPATIBILIDADE: Revit 2024+
 
-PLUGIN PYREVIT PARA GERAR
-ARMADURAS TIPO "PALITEIRO"
-EM PAREDES ESTRUTURAIS
+CORREÇÃO v2.1:
+- Vergalhões NÃO são gerados dentro de aberturas
+  de portas e janelas.
+- A lógica projeta cada abertura na direção da parede
+  e exclui posições que caem dentro do intervalo da abertura.
 """
 
 # =========================================================
@@ -51,21 +52,13 @@ def get_rebar_types():
     for r in collector:
 
         try:
-
             param = r.LookupParameter("Type Name")
-
             if param:
                 name = param.AsString()
             else:
-                name = "Vergalhao_{}".format(
-                    r.Id.IntegerValue
-                )
-
+                name = "Vergalhao_{}".format(r.Id.IntegerValue)
         except:
-
-            name = "Vergalhao_{}".format(
-                r.Id.IntegerValue
-            )
+            name = "Vergalhao_{}".format(r.Id.IntegerValue)
 
         types[name] = r
 
@@ -78,14 +71,90 @@ def get_rebar_types():
 class WallSelectionFilter(ISelectionFilter):
 
     def AllowElement(self, elem):
-
-        if isinstance(elem, Wall):
-            return True
-
-        return False
+        return isinstance(elem, Wall)
 
     def AllowReference(self, ref, point):
         return True
+
+
+# =========================================================
+# ABERTURAS DA PAREDE
+# Retorna lista de intervalos [inicio, fim] em feet
+# projetados na direção da parede (distância a partir do start).
+# Cada intervalo representa uma zona proibida para vergalhão.
+# =========================================================
+def get_opening_zones(wall, wall_start, wall_direction, tolerance_cm=5.0):
+    """
+    Coleta todas as portas e janelas hospedadas nesta parede
+    e calcula, para cada uma, o intervalo [proj_min, proj_max]
+    ao longo do eixo da parede.
+
+    tolerance_cm: margem extra em cada lado da abertura (cm).
+    Vergalhões dentro de [proj_min - tol, proj_max + tol] são ignorados.
+    """
+
+    tolerance = cm_to_feet(tolerance_cm)
+    zones = []
+
+    # Categorias que representam aberturas
+    opening_categories = [
+        BuiltInCategory.OST_Doors,
+        BuiltInCategory.OST_Windows,
+    ]
+
+    wall_id = wall.Id
+
+    for category in opening_categories:
+
+        openings = (
+            FilteredElementCollector(doc)
+            .OfCategory(category)
+            .OfClass(FamilyInstance)
+            .ToElements()
+        )
+
+        for opening in openings:
+
+            # Verifica se está hospedado nesta parede
+            host = opening.Host
+            if host is None or host.Id != wall_id:
+                continue
+
+            bb = opening.get_BoundingBox(None)
+            if bb is None:
+                continue
+
+            # Projeta os 4 cantos da bounding box (X/Y) na direção da parede
+            # Usamos os 4 cantos do retângulo horizontal do bb
+            corners = [
+                XYZ(bb.Min.X, bb.Min.Y, 0),
+                XYZ(bb.Max.X, bb.Min.Y, 0),
+                XYZ(bb.Min.X, bb.Max.Y, 0),
+                XYZ(bb.Max.X, bb.Max.Y, 0),
+            ]
+
+            projections = [
+                (corner - wall_start).DotProduct(wall_direction)
+                for corner in corners
+            ]
+
+            proj_min = min(projections) - tolerance
+            proj_max = max(projections) + tolerance
+
+            zones.append((proj_min, proj_max))
+
+    return zones
+
+
+def is_inside_opening(position, opening_zones):
+    """
+    Retorna True se a posição (distância ao longo da parede em feet)
+    cair dentro de qualquer zona de abertura.
+    """
+    for (zone_min, zone_max) in opening_zones:
+        if zone_min <= position <= zone_max:
+            return True
+    return False
 
 
 # =========================================================
@@ -96,14 +165,9 @@ def get_user_inputs():
     rebar_types = get_rebar_types()
 
     if not rebar_types:
-        forms.alert(
-            "Nenhum tipo de vergalhão encontrado."
-        )
+        forms.alert("Nenhum tipo de vergalhão encontrado.")
         return None
 
-    # =====================================================
-    # TIPO DE VERGALHÃO
-    # =====================================================
     selected_rebar = forms.SelectFromList.show(
         sorted(rebar_types.keys()),
         title="Tipo de Vergalhão",
@@ -113,18 +177,12 @@ def get_user_inputs():
     if not selected_rebar:
         return None
 
-    # =====================================================
-    # ESPAÇAMENTO
-    # =====================================================
     espacamento = forms.ask_for_string(
         default="24",
         prompt="Espaçamento máximo (cm):",
         title="Paliteiro"
     )
 
-    # =====================================================
-    # ARRANQUE
-    # =====================================================
     arranque = forms.alert(
         "Lançar Arranque?",
         yes=True,
@@ -132,18 +190,13 @@ def get_user_inputs():
     )
 
     arranque_comp = "0"
-
     if arranque:
-
         arranque_comp = forms.ask_for_string(
             default="60",
             prompt="Comprimento do Arranque (cm):",
             title="Arranque"
         )
 
-    # =====================================================
-    # EMBASAMENTO
-    # =====================================================
     embasamento = forms.alert(
         "Lançar Embasamento?",
         yes=True,
@@ -151,45 +204,31 @@ def get_user_inputs():
     )
 
     embasamento_comp = "0"
-
     if embasamento:
-
         embasamento_comp = forms.ask_for_string(
             default="100",
             prompt="Comprimento do Embasamento (cm):",
             title="Embasamento"
         )
 
-    # =====================================================
-    # DOBRA
-    # =====================================================
     dobra_comp = forms.ask_for_string(
         default="20",
         prompt="Comprimento da dobra (cm):",
         title="Dobra"
     )
 
-    # =====================================================
-    # TOPO
-    # =====================================================
     topo_comp = forms.ask_for_string(
         default="0",
         prompt="Comprimento do topo (cm):",
         title="Topo"
     )
 
-    # =====================================================
-    # BASE
-    # =====================================================
     base_comp = forms.ask_for_string(
         default="0",
         prompt="Comprimento da base (cm):",
         title="Base"
     )
 
-    # =====================================================
-    # COBRIMENTO
-    # =====================================================
     cobrimento = forms.ask_for_string(
         default="3",
         prompt="Cobrimento do concreto (cm):",
@@ -197,36 +236,16 @@ def get_user_inputs():
     )
 
     return {
-
-        "rebar_type":
-            rebar_types[selected_rebar],
-
-        "arranque":
-            arranque,
-
-        "arranque_comp":
-            float(arranque_comp),
-
-        "embasamento":
-            embasamento,
-
-        "embasamento_comp":
-            float(embasamento_comp),
-
-        "dobra_comp":
-            float(dobra_comp),
-
-        "espacamento":
-            float(espacamento),
-
-        "cobrimento":
-            float(cobrimento),
-
-        "topo_comp":
-            float(topo_comp),
-
-        "base_comp":
-            float(base_comp)
+        "rebar_type":       rebar_types[selected_rebar],
+        "arranque":         arranque,
+        "arranque_comp":    float(arranque_comp),
+        "embasamento":      embasamento,
+        "embasamento_comp": float(embasamento_comp),
+        "dobra_comp":       float(dobra_comp),
+        "espacamento":      float(espacamento),
+        "cobrimento":       float(cobrimento),
+        "topo_comp":        float(topo_comp),
+        "base_comp":        float(base_comp),
     }
 
 
@@ -238,48 +257,25 @@ def get_wall_data(wall):
     loc_curve = wall.Location.Curve
 
     start = loc_curve.GetEndPoint(0)
-    end = loc_curve.GetEndPoint(1)
+    end   = loc_curve.GetEndPoint(1)
 
-    direction = (
-        end - start
-    ).Normalize()
-
-    width = wall.Width
-
-    bbox = wall.get_BoundingBox(None)
-
-    base_z = bbox.Min.Z
-    top_z = bbox.Max.Z
-
-    height = top_z - base_z
-
-    length = loc_curve.Length
+    direction = (end - start).Normalize()
+    width     = wall.Width
+    bbox      = wall.get_BoundingBox(None)
+    base_z    = bbox.Min.Z
+    top_z     = bbox.Max.Z
+    height    = top_z - base_z
+    length    = loc_curve.Length
 
     return {
-
-        "start":
-            start,
-
-        "end":
-            end,
-
-        "direction":
-            direction,
-
-        "width":
-            width,
-
-        "height":
-            height,
-
-        "length":
-            length,
-
-        "base_z":
-            base_z,
-
-        "top_z":
-            top_z
+        "start":     start,
+        "end":       end,
+        "direction": direction,
+        "width":     width,
+        "height":    height,
+        "length":    length,
+        "base_z":    base_z,
+        "top_z":     top_z,
     }
 
 
@@ -290,51 +286,36 @@ def create_wall_rebars(wall, config):
 
     wall_data = get_wall_data(wall)
 
-    spacing = cm_to_feet(
-        config["espacamento"]
-    )
-
-    cover = cm_to_feet(
-        config["cobrimento"]
-    )
-
-    hook = cm_to_feet(
-        config["dobra_comp"]
-    )
-
-    topo = cm_to_feet(
-        config["topo_comp"]
-    )
-
-    base = cm_to_feet(
-        config["base_comp"]
-    )
-
-    arranque = cm_to_feet(
-        config["arranque_comp"]
-    )
-
-    emb = cm_to_feet(
-        config["embasamento_comp"]
-    )
+    spacing  = cm_to_feet(config["espacamento"])
+    cover    = cm_to_feet(config["cobrimento"])
+    hook     = cm_to_feet(config["dobra_comp"])
+    topo     = cm_to_feet(config["topo_comp"])
+    base     = cm_to_feet(config["base_comp"])
+    arranque = cm_to_feet(config["arranque_comp"])
+    emb      = cm_to_feet(config["embasamento_comp"])
 
     rebar_type = config["rebar_type"]
+    direction  = wall_data["direction"]
 
-    direction = wall_data["direction"]
+    normal = XYZ.BasisZ.CrossProduct(direction)
 
-    normal = XYZ.BasisZ.CrossProduct(
-        direction
+    usable_length = wall_data["length"] - (cover * 2)
+
+    qty = int(usable_length / spacing) + 1
+
+    # ---------------------------------------------------------
+    # PRÉ-CALCULAR zonas de abertura (portas + janelas)
+    # Uma única chamada por parede, antes do loop de vergalhões.
+    # ---------------------------------------------------------
+    opening_zones = get_opening_zones(
+        wall,
+        wall_data["start"],
+        direction,
+        tolerance_cm=2.0      # margem de 2 cm em cada lado da abertura
     )
 
-    usable_length = (
-        wall_data["length"] - (cover * 2)
-    )
-
-    qty = int(
-        usable_length / spacing
-    ) + 1
-
-    rebars = []
+    rebars   = []
+    skipped  = 0
 
     for i in range(qty):
 
@@ -343,10 +324,15 @@ def create_wall_rebars(wall, config):
         if dist > usable_length:
             break
 
-        point = (
-            wall_data["start"] +
-            (direction * dist)
-        )
+        # ---------------------------------------------------------
+        # VERIFICAÇÃO: esta posição cai dentro de uma abertura?
+        # Se sim, pula sem criar o vergalhão.
+        # ---------------------------------------------------------
+        if is_inside_opening(dist, opening_zones):
+            skipped += 1
+            continue
+
+        point = wall_data["start"] + (direction * dist)
 
         x = point.X
         y = point.Y
@@ -354,88 +340,36 @@ def create_wall_rebars(wall, config):
         z1 = wall_data["base_z"]
         z2 = wall_data["top_z"]
 
-        # =================================================
-        # ARRANQUE
-        # =================================================
         if config["arranque"]:
             z1 -= arranque
 
-        # =================================================
-        # TOPO
-        # =================================================
         z2 += topo
 
-        # =================================================
-        # PONTOS
-        # =================================================
         p1 = XYZ(x, y, z1)
         p2 = XYZ(x, y, z2)
 
         curves = []
 
-        # =================================================
-        # EMBASAMENTO
-        # =================================================
+        # Embasamento (extensão horizontal na base)
         if config["embasamento"]:
+            emb_point = p1 - (direction * emb)
+            curves.append(Line.CreateBound(emb_point, p1))
 
-            emb_point = (
-                p1 - (direction * emb)
-            )
+        # Linha vertical principal
+        curves.append(Line.CreateBound(p1, p2))
 
-            emb_curve = Line.CreateBound(
-                emb_point,
-                p1
-            )
-
-            curves.append(emb_curve)
-
-        # =================================================
-        # LINHA VERTICAL
-        # =================================================
-        vertical_curve = Line.CreateBound(
-            p1,
-            p2
-        )
-
-        curves.append(vertical_curve)
-
-        # =================================================
-        # DOBRA SUPERIOR
-        # =================================================
+        # Dobra no topo
         if hook > 0:
+            hook_point = p2 + (direction * hook)
+            curves.append(Line.CreateBound(p2, hook_point))
 
-            hook_point = (
-                p2 + (direction * hook)
-            )
-
-            hook_curve = Line.CreateBound(
-                p2,
-                hook_point
-            )
-
-            curves.append(hook_curve)
-
-        # =================================================
-        # BASE
-        # =================================================
+        # Extensão na base
         if base > 0:
+            base_point = p1 - (direction * base)
+            curves.insert(0, Line.CreateBound(base_point, p1))
 
-            base_point = (
-                p1 - (direction * base)
-            )
-
-            base_curve = Line.CreateBound(
-                base_point,
-                p1
-            )
-
-            curves.insert(0, base_curve)
-
-        # =================================================
-        # CRIAR VERGALHÃO
-        # =================================================
+        # Criar vergalhão
         try:
-
             rebar = Rebar.CreateFromCurves(
                 doc,
                 RebarStyle.Standard,
@@ -450,18 +384,12 @@ def create_wall_rebars(wall, config):
                 True,
                 True
             )
-
             rebars.append(rebar)
 
         except Exception as ex:
+            print("Erro ao criar vergalhão na posição {:.2f} ft: {}".format(dist, ex))
 
-            print(
-                "Erro ao criar vergalhão:"
-            )
-
-            print(ex)
-
-    return rebars
+    return rebars, skipped
 
 
 # =========================================================
@@ -469,45 +397,23 @@ def create_wall_rebars(wall, config):
 # =========================================================
 def show_preview_message(config):
 
-    msg = []
-
-    msg.append(
-        "CONFIGURAÇÕES DO PALITEIRO"
-    )
-
-    msg.append("")
-
-    msg.append(
-        "Espaçamento: {} cm".format(
-            config["espacamento"]
-        )
-    )
-
-    msg.append(
-        "Dobra: {} cm".format(
-            config["dobra_comp"]
-        )
-    )
+    msg = [
+        "CONFIGURAÇÕES DO PALITEIRO",
+        "",
+        "Espaçamento: {} cm".format(config["espacamento"]),
+        "Dobra: {} cm".format(config["dobra_comp"]),
+    ]
 
     if config["arranque"]:
-
-        msg.append(
-            "Arranque: {} cm".format(
-                config["arranque_comp"]
-            )
-        )
+        msg.append("Arranque: {} cm".format(config["arranque_comp"]))
 
     if config["embasamento"]:
+        msg.append("Embasamento: {} cm".format(config["embasamento_comp"]))
 
-        msg.append(
-            "Embasamento: {} cm".format(
-                config["embasamento_comp"]
-            )
-        )
+    msg.append("")
+   
 
-    forms.alert(
-        "\n".join(msg)
-    )
+    forms.alert("\n".join(msg))
 
 
 # =========================================================
@@ -517,97 +423,58 @@ def main():
 
     view = doc.ActiveView
 
-    if (
-        not isinstance(view, ViewPlan)
-        and
-        not isinstance(view, View3D)
-    ):
-
-        forms.alert(
-            "Execute em planta ou 3D.",
-            exitscript=True
-        )
+    if not isinstance(view, ViewPlan) and not isinstance(view, View3D):
+        forms.alert("Execute em planta ou 3D.", exitscript=True)
 
     config = get_user_inputs()
-
     if not config:
         return
 
     show_preview_message(config)
 
-    # =====================================================
-    # SELEÇÃO
-    # =====================================================
+    # Seleção de paredes
     try:
-
         refs = uidoc.Selection.PickObjects(
             ObjectType.Element,
             WallSelectionFilter(),
-            "Selecione as paredes"
+            "Selecione as paredes (ESC para cancelar)"
         )
-
     except:
         return
 
-    walls = [
-        doc.GetElement(r.ElementId)
-        for r in refs
-    ]
+    walls = [doc.GetElement(r.ElementId) for r in refs]
 
     if not walls:
-
-        forms.alert(
-            "Nenhuma parede selecionada."
-        )
-
+        forms.alert("Nenhuma parede selecionada.")
         return
 
-    created = 0
+    total_created = 0
+    total_skipped = 0
 
-    # =====================================================
-    # TRANSACTION
-    # =====================================================
-    t = Transaction(
-        doc,
-        "Gerar Paliteiro"
-    )
-
+    t = Transaction(doc, "Gerar Paliteiro")
     t.Start()
 
     try:
-
         for wall in walls:
-
-            rebars = create_wall_rebars(
-                wall,
-                config
-            )
-
-            created += len(rebars)
+            rebars, skipped = create_wall_rebars(wall, config)
+            total_created += len(rebars)
+            total_skipped += skipped
 
         t.Commit()
 
     except Exception as ex:
-
         print(ex)
-
         t.RollBack()
-
-        forms.alert(
-            "Erro durante a criação."
-        )
-
+        forms.alert("Erro durante a criação:\n{}".format(ex))
         return
 
-    # =====================================================
-    # FINAL
-    # =====================================================
-    forms.alert(
-        "Paliteiro gerado!\n\n"
-        "{} vergalhões criados.".format(
-            created
-        )
-    )
+    # Resultado final
+    msg = (
+        "gerado com sucesso!\n\n"
+        "{} vergalhões criados.\n"
+    ).format(total_created, total_skipped)
+
+    forms.alert(msg)
 
 
 # =========================================================
