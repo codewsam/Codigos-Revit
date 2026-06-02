@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 __title__   = "Tela de Canto"
 __author__  = "Samuel"
-__version__ = "Versao 1.0"
+__version__ = "Versao 1.1"
 
 import clr
 clr.AddReference('RevitAPI')
@@ -37,7 +37,47 @@ def get_name(el):
     return p.AsString() if p else "Id_{}".format(el.Id.IntegerValue)
 
 
+def get_wall_base_z(wall):
+    """
+    Retorna o Z real da base da parede usando o BoundingBox da geometria.
+    Mais confiavel que nivel+offset pois reflete o Z exato da geometria,
+    eliminando fragmentos causados por desalinhamento de origem.
+    """
+    bb = wall.get_BoundingBox(None)
+    if bb:
+        return bb.Min.Z
+    # Fallback por nivel + offset
+    base_level_id = wall.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT).AsElementId()
+    base_level    = doc.GetElement(base_level_id)
+    base_elev     = base_level.Elevation if base_level else 0.0
+    offset_param  = wall.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET)
+    base_offset   = offset_param.AsDouble() if offset_param else 0.0
+    return base_elev + base_offset
+
+
+def get_wall_top_z(wall):
+    """
+    Retorna o Z real do topo da parede usando o BoundingBox da geometria.
+    """
+    bb = wall.get_BoundingBox(None)
+    if bb:
+        return bb.Max.Z
+    # Fallback por nivel + altura
+    base_z  = get_wall_base_z(wall)
+    h_param = wall.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM)
+    height  = h_param.AsDouble() if h_param else (2.7 / 0.3048)
+    return base_z + height
+
+
 def get_wall_height(wall):
+    """
+    Retorna a altura real da parede como diferenca entre topo e base
+    do BoundingBox, garantindo que a tela cobre exatamente a geometria
+    sem sobras nem fragmentos.
+    """
+    bb = wall.get_BoundingBox(None)
+    if bb:
+        return bb.Max.Z - bb.Min.Z
     h_param = wall.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM)
     return h_param.AsDouble() if h_param else (2.7 / 0.3048)
 
@@ -113,9 +153,17 @@ def encontrar_canto(wall_a, wall_b):
 def criar_loop_tela_canto(wall_a, wall_b, ponto_canto, idx_a, idx_b,
                            largura_ft, altura_ft_a, altura_ft_b):
     """
-    Cria o CurveLoop em formato L para a Tela de Canto.
-    altura_ft_a: altura para a aba da wall_a
-    altura_ft_b: altura para a aba da wall_b
+    Cria o CurveLoop em formato de aba para cada parede do canto.
+
+    CORRECAO:
+    - base_z e top_z vem diretamente do BoundingBox da parede (Min.Z / Max.Z),
+      que refletem a geometria real independente de nivel, offset ou modo de
+      altura configurado na parede.
+    - Quando altura_automatica=True, o loop vai de Min.Z a Max.Z exatos.
+    - Quando altura manual, o loop vai de Min.Z ate Min.Z + altura_manual.
+    - A origem passada para FabricArea.Create tem o mesmo Z de base_z,
+      garantindo que o layout de folhas comece exatamente na base e nao
+      gere fragmentos residuais.
     """
     dir_a = get_wall_direction(wall_a)
     dir_b = get_wall_direction(wall_b)
@@ -123,13 +171,26 @@ def criar_loop_tela_canto(wall_a, wall_b, ponto_canto, idx_a, idx_b,
     sinal_a = 1.0 if idx_a == 0 else -1.0
     sinal_b = 1.0 if idx_b == 0 else -1.0
 
-    # Aba 1: ao longo da wall_a
-    c0_a = XYZ(ponto_canto.X, ponto_canto.Y, ponto_canto.Z)
-    c1_a = XYZ(ponto_canto.X + sinal_a * dir_a.X * largura_ft,
-               ponto_canto.Y + sinal_a * dir_a.Y * largura_ft,
-               ponto_canto.Z)
-    c2_a = XYZ(c1_a.X, c1_a.Y, c1_a.Z + altura_ft_a)
-    c3_a = XYZ(c0_a.X, c0_a.Y, c0_a.Z + altura_ft_a)
+    # XY do ponto de canto (apenas coordenadas horizontais)
+    cx = ponto_canto.X
+    cy = ponto_canto.Y
+
+    # Base Z exata de cada parede (do BoundingBox)
+    base_z_a = get_wall_base_z(wall_a)
+    base_z_b = get_wall_base_z(wall_b)
+
+    # Topo Z: se altura automatica, usa Max.Z do BoundingBox;
+    # se manual, usa base + altura_ft passada
+    top_z_a = base_z_a + altura_ft_a
+    top_z_b = base_z_b + altura_ft_b
+
+    # ── Aba 1: ao longo da wall_a ─────────────────────────────
+    c0_a = XYZ(cx, cy, base_z_a)
+    c1_a = XYZ(cx + sinal_a * dir_a.X * largura_ft,
+               cy + sinal_a * dir_a.Y * largura_ft,
+               base_z_a)
+    c2_a = XYZ(c1_a.X, c1_a.Y, top_z_a)
+    c3_a = XYZ(c0_a.X, c0_a.Y, top_z_a)
 
     loop_a = CurveLoop()
     loop_a.Append(Line.CreateBound(c0_a, c1_a))
@@ -137,13 +198,13 @@ def criar_loop_tela_canto(wall_a, wall_b, ponto_canto, idx_a, idx_b,
     loop_a.Append(Line.CreateBound(c2_a, c3_a))
     loop_a.Append(Line.CreateBound(c3_a, c0_a))
 
-    # Aba 2: ao longo da wall_b
-    c0_b = XYZ(ponto_canto.X, ponto_canto.Y, ponto_canto.Z)
-    c1_b = XYZ(ponto_canto.X + sinal_b * dir_b.X * largura_ft,
-               ponto_canto.Y + sinal_b * dir_b.Y * largura_ft,
-               ponto_canto.Z)
-    c2_b = XYZ(c1_b.X, c1_b.Y, c1_b.Z + altura_ft_b)
-    c3_b = XYZ(c0_b.X, c0_b.Y, c0_b.Z + altura_ft_b)
+    # ── Aba 2: ao longo da wall_b ─────────────────────────────
+    c0_b = XYZ(cx, cy, base_z_b)
+    c1_b = XYZ(cx + sinal_b * dir_b.X * largura_ft,
+               cy + sinal_b * dir_b.Y * largura_ft,
+               base_z_b)
+    c2_b = XYZ(c1_b.X, c1_b.Y, top_z_b)
+    c3_b = XYZ(c0_b.X, c0_b.Y, top_z_b)
 
     loop_b = CurveLoop()
     loop_b.Append(Line.CreateBound(c0_b, c1_b))
@@ -197,7 +258,7 @@ class JanelaTelaCanto(Form):
     def __init__(self, tipos_disponiveis):
         Form.__init__(self)
         self.Text            = "Tela de Canto"
-        self.Size            = Size(360, 310)  # altura aumentada para o checkbox
+        self.Size            = Size(360, 310)
         self.FormBorderStyle = FormBorderStyle.FixedDialog
         self.StartPosition   = FormStartPosition.CenterScreen
         self.MaximizeBox     = False
@@ -206,13 +267,12 @@ class JanelaTelaCanto(Form):
         self.tipo_selecionado   = None
         self.largura_cm         = None
         self.altura_cm          = None
-        self.altura_automatica  = False  # novo campo publico
+        self.altura_automatica  = False
 
         padding_x    = 20
         largura_ctrl = 300
         y            = 20
 
-        # ── Tipo de Tela ──────────────────────────────────────
         lbl_tipo = Label()
         lbl_tipo.Text     = "Tipo de Tela de Canto:"
         lbl_tipo.Location = Point(padding_x, y)
@@ -232,7 +292,6 @@ class JanelaTelaCanto(Form):
 
         y += 36
 
-        # ── Largura ───────────────────────────────────────────
         lbl_larg = Label()
         lbl_larg.Text     = "Largura da Tela (cm):"
         lbl_larg.Location = Point(padding_x, y)
@@ -248,7 +307,6 @@ class JanelaTelaCanto(Form):
 
         y += 36
 
-        # ── Altura ────────────────────────────────────────────
         self.lbl_alt = Label()
         self.lbl_alt.Text     = "Altura da Tela (cm):"
         self.lbl_alt.Location = Point(padding_x, y)
@@ -264,7 +322,6 @@ class JanelaTelaCanto(Form):
 
         y += 36
 
-        # ── Checkbox: Altura automatica ───────────────────────
         self.chk_auto = CheckBox()
         self.chk_auto.Text     = "Altura automatica pela parede"
         self.chk_auto.Location = Point(padding_x, y)
@@ -275,7 +332,6 @@ class JanelaTelaCanto(Form):
 
         y += 36
 
-        # ── Botoes ────────────────────────────────────────────
         btn_ok = Button()
         btn_ok.Text     = "OK"
         btn_ok.Size     = Size(90, 30)
@@ -294,7 +350,6 @@ class JanelaTelaCanto(Form):
         self.CancelButton = btn_cancelar
 
     def ao_mudar_checkbox(self, sender, e):
-        """Habilita/desabilita o campo de altura conforme o checkbox."""
         auto = self.chk_auto.Checked
         self.txt_altura.Enabled  = not auto
         self.lbl_alt.Enabled     = not auto
@@ -320,7 +375,6 @@ class JanelaTelaCanto(Form):
             )
             return
 
-        # So valida altura se o checkbox nao estiver marcado
         if not self.chk_auto.Checked:
             try:
                 altura = float(self.txt_altura.Text.replace(",", "."))
@@ -334,7 +388,7 @@ class JanelaTelaCanto(Form):
                 return
             self.altura_cm = altura
         else:
-            self.altura_cm = None  # sera calculada por parede
+            self.altura_cm = None
 
         self.tipo_selecionado  = self.cmb_tipo.SelectedItem
         self.largura_cm        = largura
@@ -422,8 +476,10 @@ with revit.Transaction("Tela de Canto"):
         cantos_processados += 1
 
         # ── Resolve a altura de cada parede ──────────────────
+        # Altura automatica: usa diferenca exata Max.Z - Min.Z do BoundingBox.
+        # Altura manual: usa o valor do usuario (a partir da base da parede).
         if altura_automatica:
-            altura_ft_a = get_wall_height(wall_a)
+            altura_ft_a = get_wall_height(wall_a)   # bb.Max.Z - bb.Min.Z
             altura_ft_b = get_wall_height(wall_b)
         else:
             altura_ft_a = altura_ft_manual
@@ -449,11 +505,22 @@ with revit.Transaction("Tela de Canto"):
                 curve_loops = List[CurveLoop]()
                 curve_loops.Add(loop)
 
+                # CORRECAO: majorDirection = Z (vertical)
+                # Com majorDirection horizontal (direcao da parede), o Revit
+                # empilha folhas pela altura da parede usando a dimensao CURTA
+                # da folha (ex: Q138 = 2,45m por camada). Numa parede de 3m:
+                #   1 folha (2,45m) + fragmento (0,55m) = BUG
+                #
+                # Com majorDirection vertical (Z), a dimensao LONGA da folha
+                # (ex: 6,00m do Q138) fica na vertical, cobrindo qualquer
+                # parede de ate 6m com 1 unica folha, sem fragmentos.
+                direcao_vertical = XYZ(0.0, 0.0, 1.0)
+
                 fa = FabricArea.Create(
                     doc,
                     wall_ref,
                     curve_loops,
-                    direcao,
+                    direcao_vertical,
                     origem,
                     fabric_area_type_id,
                     fabric_sheet_type_id
