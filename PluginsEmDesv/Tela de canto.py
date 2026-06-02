@@ -500,20 +500,16 @@ with revit.Transaction("Tela de Canto"):
             )
             continue
 
+        # IDs das duas abas deste canto — serao agrupadas no final
+        ids_grupo = List[ElementId]()
+
         for loop, wall_ref, direcao, origem in abas:
             try:
                 curve_loops = List[CurveLoop]()
                 curve_loops.Add(loop)
 
-                # CORRECAO: majorDirection = Z (vertical)
-                # Com majorDirection horizontal (direcao da parede), o Revit
-                # empilha folhas pela altura da parede usando a dimensao CURTA
-                # da folha (ex: Q138 = 2,45m por camada). Numa parede de 3m:
-                #   1 folha (2,45m) + fragmento (0,55m) = BUG
-                #
-                # Com majorDirection vertical (Z), a dimensao LONGA da folha
-                # (ex: 6,00m do Q138) fica na vertical, cobrindo qualquer
-                # parede de ate 6m com 1 unica folha, sem fragmentos.
+                # majorDirection = Z (vertical) para que a dimensao LONGA
+                # da folha fique na altura da parede → 1 folha por aba, sem fragmento.
                 direcao_vertical = XYZ(0.0, 0.0, 1.0)
 
                 fa = FabricArea.Create(
@@ -530,6 +526,7 @@ with revit.Transaction("Tela de Canto"):
                 if p_recob and not p_recob.IsReadOnly:
                     p_recob.Set(RECOBRIMENTO_FT)
 
+                ids_grupo.Add(fa.Id)
                 criados += 1
 
             except Exception as e:
@@ -538,6 +535,20 @@ with revit.Transaction("Tela de Canto"):
                         cantos_processados,
                         wall_ref.Id.IntegerValue,
                         str(e)
+                    )
+                )
+
+        # Agrupa as duas abas num unico elemento em L.
+        # Uma FabricArea e sempre plana (hospedada em 1 parede), entao a tela
+        # em L e representada por 2 FabricAreas agrupadas — o Revit as trata
+        # como 1 elemento so: selecao, move e tabelas funcionam em conjunto.
+        if ids_grupo.Count == 2:
+            try:
+                doc.Create.NewGroup(ids_grupo)
+            except Exception as e:
+                erros.append(
+                    u"Canto {}: nao foi possivel agrupar as abas: {}".format(
+                        cantos_processados, str(e)
                     )
                 )
 
