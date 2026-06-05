@@ -42,8 +42,6 @@ from Autodesk.Revit.DB.ExtensibleStorage import Schema, Entity, DataStorage
 
 from pyrevit import forms, script
 
-output = script.get_output()
-
 # ─────────────────────────────────────────────
 #  CONSTANTES
 # ─────────────────────────────────────────────
@@ -77,7 +75,6 @@ def deserializar_wall_ids(wall_ids_str):
 def carregar_grupos(doc):
     schema = Schema.Lookup(SCHEMA_GUID)
     if not schema:
-        output.print_md("**[DEBUG]** Schema nao encontrado no documento.")
         return []
 
     collector = list(
@@ -105,10 +102,9 @@ def carregar_grupos(doc):
                 "nome_grupo":   entity.Get[System.String](FIELD_NOME),
             }
             grupos.append(grupo)
-        except Exception as ex:
-            output.print_md("**[DEBUG]** Erro ao ler grupo '{}': {}".format(ds.Name, str(ex)))
+        except Exception:
+            continue
 
-    output.print_md("**[DEBUG]** Grupos carregados: {}".format(len(grupos)))
     return grupos
 
 
@@ -363,13 +359,6 @@ class JanelaEditarAbertura(Window):
         self.txt_peitoril.Margin    = Thickness(0, 2, 0, 14)
         root.Children.Add(self.txt_peitoril)
 
-        aviso             = TextBlock()
-        aviso.Text        = "Largura/Altura criam novo tipo para nao afetar outras instancias."
-        aviso.FontSize    = 10
-        aviso.Foreground  = SolidColorBrush(Color.FromRgb(160, 100, 0))
-        aviso.TextWrapping = System.Windows.TextWrapping.Wrap
-        aviso.Margin      = Thickness(0, 0, 0, 14)
-        root.Children.Add(aviso)
 
         painel_btns             = StackPanel()
         painel_btns.Orientation = System.Windows.Controls.Orientation.Horizontal
