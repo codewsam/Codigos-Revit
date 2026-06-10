@@ -7,7 +7,7 @@ __doc__ = "COloca varios vergalhões nas paredes selecionadas."
 """
 PLUGIN: Paliteiro
 VERSAO: 2.3
-COMPATIBILIDADE: Revit 2024+
+COMPATIBILIDADE: Revit 2025+
 
 
 """
