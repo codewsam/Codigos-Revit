@@ -306,11 +306,12 @@ XAML = u"""
                VerticalContentAlignment="Center"/>
 
       <!-- AVISO ABERTURAS -->
+      <!-- DEPOIS (correto) -->
       <Border Background="#E3F2FD" CornerRadius="4"
               Padding="10,8" Margin="0,16,0,4">
         <TextBlock TextWrapping="Wrap"
                    Foreground="#1565C0" FontSize="11"
-                  
+                   Text="Vergalhoes sobre portas e janelas serao ignorados automaticamente."/>
       </Border>
 
       <!-- BOTOES -->
