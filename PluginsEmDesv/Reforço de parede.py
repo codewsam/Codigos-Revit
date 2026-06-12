@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 __title__ = "Reforço de Parede"
 __author__ = "Samuel"
-__version__ = "Versão 6.7 - com face traseira"
+__version__ = "Versão 6.9 - vertical limitado pela base da parede em portas"
 
 import clr
 import math
@@ -96,7 +96,55 @@ def rotate_vector(vec, axis, angle_deg):
     t = Transform.CreateRotation(axis, math.radians(angle_deg))
     return t.OfVector(vec)
 
-with Transaction(doc, "Reforço de Aberturas v6.7") as t:
+def create_vertical_rebars(wall, bar_type, norm, left_face, right_face, z0, z1, vert_ext, bottom_limit=None):
+    z_bottom = z0 - vert_ext
+    if bottom_limit is not None:
+        z_bottom = max(z_bottom, bottom_limit)
+
+    create_rebar(wall, bar_type, norm,
+                 XYZ(left_face.X, left_face.Y, z_bottom),
+                 XYZ(left_face.X, left_face.Y, z1 + vert_ext))
+
+    create_rebar(wall, bar_type, norm,
+                 XYZ(right_face.X, right_face.Y, z_bottom),
+                 XYZ(right_face.X, right_face.Y, z1 + vert_ext))
+
+def create_horizontal_rebars(wall, bar_type, left_ext, right_ext, z0, z1, skip_bottom=False):
+    if not skip_bottom:
+        create_rebar(wall, bar_type, XYZ.BasisZ,
+                     XYZ(left_ext.X, left_ext.Y, z0),
+                     XYZ(right_ext.X, right_ext.Y, z0))
+
+    create_rebar(wall, bar_type, XYZ.BasisZ,
+                 XYZ(left_ext.X, left_ext.Y, z1),
+                 XYZ(right_ext.X, right_ext.Y, z1))
+
+def create_diagonal_rebars(wall, bar_type, norm, axis, left_face, right_face, z0, z1, half, skip_bottom=False):
+    base_vectors = [
+        axis - XYZ.BasisZ,
+        -axis - XYZ.BasisZ,
+        axis + XYZ.BasisZ,
+        -axis + XYZ.BasisZ
+    ]
+
+    points = [
+        (XYZ(left_face.X, left_face.Y, z1),  base_vectors[0]),
+        (XYZ(right_face.X, right_face.Y, z1), base_vectors[1]),
+    ]
+    if not skip_bottom:
+        points += [
+            (XYZ(left_face.X, left_face.Y, z0),  base_vectors[2]),
+            (XYZ(right_face.X, right_face.Y, z0), base_vectors[3])
+        ]
+
+    for pt, vec in points:
+        direction = vec.Normalize()
+        direction = rotate_vector(direction, norm, diag_angle)
+        start_pt = pt - direction.Multiply(half)
+        end_pt   = pt + direction.Multiply(half)
+        create_rebar(wall, bar_type, norm, start_pt, end_pt)
+
+with Transaction(doc, "Reforço de Aberturas v6.9") as t:
     t.Start()
 
     for wall in walls:
@@ -118,12 +166,18 @@ with Transaction(doc, "Reforço de Aberturas v6.7") as t:
         wall_thickness = wall_type.GetCompoundStructure().GetWidth()
         half_thick = wall_thickness * 0.5 + wall_cover
 
+        # Base da parede (limite inferior para verticais em portas)
+        wall_bb = wall.get_BoundingBox(None)
+        wall_base_z = wall_bb.Min.Z if wall_bb else None
+
         inserts = wall.FindInserts(True, True, True, True)
 
         for iid in inserts:
             ins = doc.GetElement(iid)
             if not ins:
                 continue
+
+            is_door = (ins.Category and ins.Category.Id.IntegerValue == int(BuiltInCategory.OST_Doors))
 
             bb = ins.get_BoundingBox(None)
             if not bb:
@@ -155,56 +209,18 @@ with Transaction(doc, "Reforço de Aberturas v6.7") as t:
             left_ext = left_face - axis.Multiply(edge_ext)
             right_ext = right_face + axis.Multiply(edge_ext)
 
-            def create_vertical_rebars(wall, bar_type, norm, left_face, right_face, z0, z1, vert_ext):
-                create_rebar(wall, bar_type, norm,
-                             XYZ(left_face.X, left_face.Y, z0 - vert_ext),
-                             XYZ(left_face.X, left_face.Y, z1 + vert_ext))
-
-                create_rebar(wall, bar_type, norm,
-                             XYZ(right_face.X, right_face.Y, z0 - vert_ext),
-                             XYZ(right_face.X, right_face.Y, z1 + vert_ext))
+            bottom_limit = wall_base_z if is_door else None
 
             # Front side verticals
-            create_vertical_rebars(wall, bar_type, normal, left_face, right_face, z0, z1, vert_ext)
-
-            def create_horizontal_rebars(wall, bar_type, left_ext, right_ext, z0, z1):
-                create_rebar(wall, bar_type, XYZ.BasisZ,
-                             XYZ(left_ext.X, left_ext.Y, z0),
-                             XYZ(right_ext.X, right_ext.Y, z0))
-
-                create_rebar(wall, bar_type, XYZ.BasisZ,
-                             XYZ(left_ext.X, left_ext.Y, z1),
-                             XYZ(right_ext.X, right_ext.Y, z1))
+            create_vertical_rebars(wall, bar_type, normal, left_face, right_face, z0, z1, vert_ext, bottom_limit)
 
             # Front side horizontals
-            create_horizontal_rebars(wall, bar_type, left_ext, right_ext, z0, z1)
-
-            def create_diagonal_rebars(wall, bar_type, norm, axis, left_face, right_face, z0, z1, half):
-                base_vectors = [
-                    axis - XYZ.BasisZ,
-                    -axis - XYZ.BasisZ,
-                    axis + XYZ.BasisZ,
-                    -axis + XYZ.BasisZ
-                ]
-
-                points = [
-                    (XYZ(left_face.X, left_face.Y, z1),  base_vectors[0]),
-                    (XYZ(right_face.X, right_face.Y, z1), base_vectors[1]),
-                    (XYZ(left_face.X, left_face.Y, z0),  base_vectors[2]),
-                    (XYZ(right_face.X, right_face.Y, z0), base_vectors[3])
-                ]
-
-                for pt, vec in points:
-                    direction = vec.Normalize()
-                    direction = rotate_vector(direction, norm, diag_angle)
-                    start_pt = pt - direction.Multiply(half)
-                    end_pt   = pt + direction.Multiply(half)
-                    create_rebar(wall, bar_type, norm, start_pt, end_pt)
+            create_horizontal_rebars(wall, bar_type, left_ext, right_ext, z0, z1, skip_bottom=is_door)
 
             half = diag_len * 0.5
 
             # Front side diagonals
-            create_diagonal_rebars(wall, bar_type, normal, axis, left_face, right_face, z0, z1, half)
+            create_diagonal_rebars(wall, bar_type, normal, axis, left_face, right_face, z0, z1, half, skip_bottom=is_door)
 
             if do_back:
                 # Back side: offset positions by half thickness along back_normal
@@ -217,13 +233,13 @@ with Transaction(doc, "Reforço de Aberturas v6.7") as t:
                 right_ext_back = right_ext + back_offset
 
                 # Back side verticals
-                create_vertical_rebars(wall, bar_type, back_normal, left_face_back, right_face_back, z0, z1, vert_ext)
+                create_vertical_rebars(wall, bar_type, back_normal, left_face_back, right_face_back, z0, z1, vert_ext, bottom_limit)
 
-                # Back side horizontals (note: BasisZ unchanged as horizontal)
-                create_horizontal_rebars(wall, bar_type, left_ext_back, right_ext_back, z0, z1)
+                # Back side horizontals
+                create_horizontal_rebars(wall, bar_type, left_ext_back, right_ext_back, z0, z1, skip_bottom=is_door)
 
                 # Back side diagonals (use back_normal for rotation)
-                create_diagonal_rebars(wall, bar_type, back_normal, axis, left_face_back, right_face_back, z0, z1, half)
+                create_diagonal_rebars(wall, bar_type, back_normal, axis, left_face_back, right_face_back, z0, z1, half, skip_bottom=is_door)
 
     t.Commit()
 
