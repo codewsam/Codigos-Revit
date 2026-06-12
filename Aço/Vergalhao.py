@@ -1,15 +1,12 @@
 # -*- coding: utf-8 -*-
 __title__ = "Vergalhoes"
-__version__ = "2.3"
-__doc__ = "COloca varios vergalhões nas paredes selecionadas."
-
+__version__ = "2.4"
+__doc__ = "Coloca varios vergalhões nas paredes selecionadas."
 
 """
 PLUGIN: Paliteiro
-VERSAO: 2.3
-COMPATIBILIDADE: Revit 2025+
-
-
+VERSAO: 2.4
+COMPATIBILIDADE: Revit 2024+
 """
 
 # =========================================================
@@ -139,14 +136,13 @@ def get_wall_data(wall):
 # GERAR ARMADURAS
 # =========================================================
 def create_wall_rebars(wall, config):
-    wd       = get_wall_data(wall)
-    spacing  = cm_to_feet(config["espacamento"])
-    cover    = cm_to_feet(config["cobrimento"])
-    hook     = cm_to_feet(config["dobra_comp"])
-    topo     = cm_to_feet(config["topo_comp"])
-    base     = cm_to_feet(config["base_comp"])
-    arranque = cm_to_feet(config["arranque_comp"])
-    emb      = cm_to_feet(config["embasamento_comp"])
+    wd          = get_wall_data(wall)
+    spacing     = cm_to_feet(config["espacamento"])
+    cover       = cm_to_feet(config["cobrimento"])
+    hook        = cm_to_feet(config["dobra_comp"])
+    base_ext    = cm_to_feet(config["base_comp"])
+    altura      = cm_to_feet(config["altura"])
+    embutimento = cm_to_feet(config["embutimento"])
 
     direction = wd["direction"]
     normal    = XYZ.BasisZ.CrossProduct(direction)
@@ -169,23 +165,22 @@ def create_wall_rebars(wall, config):
 
         pt   = wd["start"] + (direction * dist)
         x, y = pt.X, pt.Y
-        z1   = wd["base_z"] - (arranque if config["arranque"] else 0)
-        z2   = wd["top_z"]  + topo
-        p1   = XYZ(x, y, z1)
-        p2   = XYZ(x, y, z2)
 
-        curves = []
+        # Começa embutido na laje (desce embutimento abaixo da base da parede)
+        z1 = wd["base_z"] - embutimento
+        # Sobe apenas a altura definida a partir da base da parede
+        z2 = wd["base_z"] + altura
 
-        if config["embasamento"] and emb > 0:
-            curves.append(Line.CreateBound(p1 - (direction * emb), p1))
+        p1 = XYZ(x, y, z1)
+        p2 = XYZ(x, y, z2)
 
-        curves.append(Line.CreateBound(p1, p2))
+        curves = [Line.CreateBound(p1, p2)]
 
         if hook > 0:
             curves.append(Line.CreateBound(p2, p2 + (direction * hook)))
 
-        if base > 0:
-            curves.insert(0, Line.CreateBound(p1 - (direction * base), p1))
+        if base_ext > 0:
+            curves.insert(0, Line.CreateBound(p1 - (direction * base_ext), p1))
 
         try:
             rebar = Rebar.CreateFromCurves(
@@ -208,8 +203,7 @@ def create_wall_rebars(wall, config):
 
 
 # =========================================================
-# XAML — sem <Style> globais (incompativel com IronPython)
-# Todas as propriedades visuais aplicadas inline
+# XAML
 # =========================================================
 XAML = u"""
 <Window
@@ -250,63 +244,43 @@ XAML = u"""
                BorderBrush="#BBBBBB" Background="White"
                VerticalContentAlignment="Center"/>
 
-      <!-- ARRANQUE -->
-      <TextBlock Text="ARRANQUE"
+      <!-- ALTURA DO VERGALHAO -->
+      <TextBlock Text="ALTURA"
                  FontWeight="SemiBold" FontSize="11"
                  Foreground="#555" Margin="0,14,0,4"/>
-      <CheckBox x:Name="chkArranque"
-                Content="Lancar Arranque" Foreground="#222"/>
-      <TextBlock x:Name="lblArranque"
-                 Text="Comprimento do Arranque (cm)"
-                 Foreground="#222" Margin="0,8,0,2"
-                 Visibility="Collapsed"/>
-      <TextBox x:Name="txtArranque" Text="60"
-               Height="26" Padding="5,3"
-               BorderBrush="#BBBBBB" Background="White"
-               VerticalContentAlignment="Center"
-               Visibility="Collapsed"/>
 
-      <!-- EMBASAMENTO -->
-      <TextBlock Text="EMBASAMENTO"
-                 FontWeight="SemiBold" FontSize="11"
-                 Foreground="#555" Margin="0,14,0,4"/>
-      <CheckBox x:Name="chkEmbasamento"
-                Content="Lancar Embasamento" Foreground="#222"/>
-      <TextBlock x:Name="lblEmbasamento"
-                 Text="Comprimento do Embasamento (cm)"
-                 Foreground="#222" Margin="0,8,0,2"
-                 Visibility="Collapsed"/>
-      <TextBox x:Name="txtEmbasamento" Text="100"
+      <TextBlock Text="Altura do vergalhao acima da laje (cm)"
+                 Foreground="#222" Margin="0,0,0,2"/>
+      <TextBox x:Name="txtAltura" Text="60"
                Height="26" Padding="5,3"
                BorderBrush="#BBBBBB" Background="White"
-               VerticalContentAlignment="Center"
-               Visibility="Collapsed"/>
+               VerticalContentAlignment="Center"/>
+
+      <TextBlock Text="Embutimento na laje / abaixo da base (cm)"
+                 Foreground="#222" Margin="0,8,0,2"/>
+      <TextBox x:Name="txtEmbutimento" Text="5"
+               Height="26" Padding="5,3"
+               BorderBrush="#BBBBBB" Background="White"
+               VerticalContentAlignment="Center"/>
 
       <!-- EXTENSOES -->
       <TextBlock Text="EXTENSOES"
                  FontWeight="SemiBold" FontSize="11"
                  Foreground="#555" Margin="0,14,0,4"/>
 
-      <TextBlock Text="Dobra (cm)" Foreground="#222" Margin="0,0,0,2"/>
+      <TextBlock Text="Dobra no topo (cm)" Foreground="#222" Margin="0,0,0,2"/>
       <TextBox x:Name="txtDobra" Text="20"
                Height="26" Padding="5,3"
                BorderBrush="#BBBBBB" Background="White"
                VerticalContentAlignment="Center"/>
 
-      <TextBlock Text="Topo (cm)" Foreground="#222" Margin="0,8,0,2"/>
-      <TextBox x:Name="txtTopo" Text="0"
-               Height="26" Padding="5,3"
-               BorderBrush="#BBBBBB" Background="White"
-               VerticalContentAlignment="Center"/>
-
-      <TextBlock Text="Base (cm)" Foreground="#222" Margin="0,8,0,2"/>
+      <TextBlock Text="Extensao na base (cm)" Foreground="#222" Margin="0,8,0,2"/>
       <TextBox x:Name="txtBase" Text="0"
                Height="26" Padding="5,3"
                BorderBrush="#BBBBBB" Background="White"
                VerticalContentAlignment="Center"/>
 
       <!-- AVISO ABERTURAS -->
-      <!-- DEPOIS (correto) -->
       <Border Background="#E3F2FD" CornerRadius="4"
               Padding="10,8" Margin="0,16,0,4">
         <TextBlock TextWrapping="Wrap"
@@ -350,39 +324,14 @@ class PaliteiroForm(forms.WPFWindow):
 
         self.result = None
 
-        # Popular combobox
         for name in rebar_names:
             self.cmbRebar.Items.Add(name)
         if rebar_names:
             self.cmbRebar.SelectedIndex = 0
 
-        # Eventos checkbox
-        self.chkArranque.Checked      += self._toggle_arranque
-        self.chkArranque.Unchecked    += self._toggle_arranque
-        self.chkEmbasamento.Checked   += self._toggle_embasamento
-        self.chkEmbasamento.Unchecked += self._toggle_embasamento
-
-        # Eventos botao
         self.btnOK.Click     += self._on_ok
         self.btnCancel.Click += self._on_cancel
 
-    # ----------------------------------------------------------
-    def _vis(self, checked):
-        return (System.Windows.Visibility.Visible
-                if checked
-                else System.Windows.Visibility.Collapsed)
-
-    def _toggle_arranque(self, sender, args):
-        v = self._vis(self.chkArranque.IsChecked)
-        self.lblArranque.Visibility = v
-        self.txtArranque.Visibility = v
-
-    def _toggle_embasamento(self, sender, args):
-        v = self._vis(self.chkEmbasamento.IsChecked)
-        self.lblEmbasamento.Visibility = v
-        self.txtEmbasamento.Visibility = v
-
-    # ----------------------------------------------------------
     def _float(self, textbox, default=0.0):
         try:
             return float(textbox.Text.replace(",", "."))
@@ -399,16 +348,13 @@ class PaliteiroForm(forms.WPFWindow):
             return
 
         self.result = {
-            "rebar_name":       self.cmbRebar.SelectedItem,
-            "espacamento":      self._float(self.txtEspacamento, 24.0),
-            "cobrimento":       self._float(self.txtCobrimento,  3.0),
-            "arranque":         bool(self.chkArranque.IsChecked),
-            "arranque_comp":    self._float(self.txtArranque,    60.0),
-            "embasamento":      bool(self.chkEmbasamento.IsChecked),
-            "embasamento_comp": self._float(self.txtEmbasamento, 100.0),
-            "dobra_comp":       self._float(self.txtDobra,       20.0),
-            "topo_comp":        self._float(self.txtTopo,        0.0),
-            "base_comp":        self._float(self.txtBase,        0.0),
+            "rebar_name":   self.cmbRebar.SelectedItem,
+            "espacamento":  self._float(self.txtEspacamento, 24.0),
+            "cobrimento":   self._float(self.txtCobrimento,  3.0),
+            "altura":       self._float(self.txtAltura,      60.0),
+            "embutimento":  self._float(self.txtEmbutimento,  5.0),
+            "dobra_comp":   self._float(self.txtDobra,       20.0),
+            "base_comp":    self._float(self.txtBase,         0.0),
         }
         self.Close()
 
@@ -431,7 +377,6 @@ def main():
         forms.alert("Nenhum tipo de vergalhao encontrado no projeto.")
         return
 
-    # Abrir formulario unico
     form = PaliteiroForm(sorted(rebar_map.keys()))
     form.show_dialog()
 
@@ -441,7 +386,6 @@ def main():
     config = form.result
     config["rebar_type"] = rebar_map[config["rebar_name"]]
 
-    # Selecao de paredes
     try:
         refs = uidoc.Selection.PickObjects(
             ObjectType.Element,
