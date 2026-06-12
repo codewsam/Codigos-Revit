@@ -74,6 +74,9 @@ class WallSelectionFilter(ISelectionFilter):
 # =========================================================
 # ZONAS DE ABERTURA (portas + janelas)
 # =========================================================
+# =========================================================
+# ZONAS DE ABERTURA (portas + janelas)
+# =========================================================
 def get_opening_zones(wall, wall_start, wall_direction, tolerance_cm=2.0):
     tolerance = cm_to_feet(tolerance_cm)
     zones     = []
@@ -100,14 +103,20 @@ def get_opening_zones(wall, wall_start, wall_direction, tolerance_cm=2.0):
                 XYZ(bb.Max.X, bb.Max.Y, 0),
             ]
             projs = [(c - wall_start).DotProduct(wall_direction) for c in corners]
-            zones.append((min(projs) - tolerance, max(projs) + tolerance))
+            zones.append((
+                min(projs) - tolerance,  # x_min
+                max(projs) + tolerance,  # x_max
+                bb.Min.Z,                # z_min da abertura
+                bb.Max.Z                 # z_max da abertura
+            ))
 
     return zones
 
 
-def is_inside_opening(position, opening_zones):
-    for (z_min, z_max) in opening_zones:
-        if z_min <= position <= z_max:
+def is_inside_opening(position, rebar_z1, rebar_z2, opening_zones):
+    for (x_min, x_max, z_min, z_max) in opening_zones:
+        # Conflito horizontal E conflito vertical
+        if x_min <= position <= x_max and rebar_z1 < z_max and rebar_z2 > z_min:
             return True
     return False
 
@@ -159,22 +168,23 @@ def create_wall_rebars(wall, config):
         if dist > usable:
             break
 
-        if is_inside_opening(dist, opening_zones):
-            skipped += 1
-            continue
-
         pt   = wd["start"] + (direction * dist)
         x, y = pt.X, pt.Y
 
-        # Começa embutido na laje (desce embutimento abaixo da base da parede)
+        # z1 e z2 PRIMEIRO
         z1 = wd["base_z"] - embutimento
-        # Sobe apenas a altura definida a partir da base da parede
         z2 = wd["base_z"] + altura
+
+        # DEPOIS a checagem
+        if is_inside_opening(dist, z1, z2, opening_zones):
+            skipped += 1
+            continue
 
         p1 = XYZ(x, y, z1)
         p2 = XYZ(x, y, z2)
 
         curves = [Line.CreateBound(p1, p2)]
+    # ... resto
 
         if hook > 0:
             curves.append(Line.CreateBound(p2, p2 + (direction * hook)))
