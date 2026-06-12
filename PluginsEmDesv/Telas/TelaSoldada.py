@@ -1,7 +1,17 @@
 # -*- coding: utf-8 -*-
 __title__   = "Folha de Tela"
 __author__  = "Samuel"
-__version__ = "Versao 5.1 - Complete"
+__version__ = "Versao 4.4"
+
+"""
+_____________________________________________________________________
+Descrição:
+
+Selecione as paredes onde deseja aplicar a folha de tela soldada.
+O script cria UMA FabricArea por parede. O Revit calcula
+automaticamente a geometria da parede, respeitando os vãos.
+_____________________________________________________________________
+"""
 
 import clr
 clr.AddReference('RevitAPI')
@@ -16,12 +26,155 @@ from pyrevit import forms, revit, script
 doc   = __revit__.ActiveUIDocument.Document
 uidoc = __revit__.ActiveUIDocument
 
-CM_TO_FT  = 1.0 / 30.48
-MM_TO_FT  = 1.0 / 304.8
+CM_TO_FT = 1.0 / 30.48
+MM_TO_FT = 1.0 / 304.8
+
 
 def get_name(el):
     p = el.get_Parameter(BuiltInParameter.ALL_MODEL_TYPE_NAME)
     return p.AsString() if p else "Id_{}".format(el.Id.IntegerValue)
+
+
+def get_wall_axis(wall):
+    curve = wall.Location.Curve
+    p0 = curve.GetEndPoint(0)
+    p1 = curve.GetEndPoint(1)
+    dx = p1.X - p0.X
+    dy = p1.Y - p0.Y
+    L  = (dx * dx + dy * dy) ** 0.5
+    return XYZ(dx / L, dy / L, 0.0)
+
+
+def get_wall_base_z(wall):
+    bb = wall.get_BoundingBox(None)
+    if bb:
+        return bb.Min.Z
+    base_level_id = wall.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT).AsElementId()
+    base_level    = doc.GetElement(base_level_id)
+    base_elev     = base_level.Elevation if base_level else 0.0
+    offset_param  = wall.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET)
+    base_offset   = offset_param.AsDouble() if offset_param else 0.0
+    return base_elev + base_offset
+
+
+def get_wall_length(wall):
+    curve = wall.Location.Curve
+    p0 = curve.GetEndPoint(0)
+    p1 = curve.GetEndPoint(1)
+    dx = p1.X - p0.X
+    dy = p1.Y - p0.Y
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def get_wall_height(wall):
+    bb = wall.get_BoundingBox(None)
+    if bb:
+        return bb.Max.Z - bb.Min.Z
+    h_param = wall.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM)
+    return h_param.AsDouble() if h_param else (2.7 / 0.3048)
+
+
+def get_face_loops_da_parede(wall):
+    """
+    Extrai os CurveLoops da face frontal da parede diretamente
+    da geometria do Revit. Esses loops já contêm os furos das
+    aberturas calculados pelo próprio Revit, sem nenhuma
+    manipulação manual — eliminando qualquer risco de interseção.
+
+    Retorna (List[CurveLoop], origem) ou (None, None) se falhar.
+    """
+    opts = Options()
+    opts.ComputeReferences     = False
+    opts.IncludeNonVisibleObjects = False
+    opts.DetailLevel           = ViewDetailLevel.Fine
+
+    geom_elem = wall.get_Geometry(opts)
+    if geom_elem is None:
+        return None, None
+
+    # Direção normal esperada da face frontal
+    axis   = get_wall_axis(wall)
+    normal = XYZ(-axis.Y, axis.X, 0.0)   # 90° anti-horário = face exterior
+
+    melhor_face   = None
+    melhor_area   = 0.0
+
+    for obj in geom_elem:
+        solid = None
+        if isinstance(obj, Solid):
+            solid = obj
+        elif isinstance(obj, GeometryInstance):
+            for sub in obj.GetInstanceGeometry():
+                if isinstance(sub, Solid) and sub.Volume > 1e-9:
+                    solid = sub
+                    break
+
+        if solid is None or solid.Volume < 1e-9:
+            continue
+
+        for face in solid.Faces:
+            fn = face.FaceNormal
+            # Aceita a face cuja normal é aproximadamente paralela
+            # ao vetor normal da parede (frente ou verso)
+            dot = abs(fn.X * normal.X + fn.Y * normal.Y)
+            if dot < 0.9:
+                continue
+            # Pega a maior face (parede inteira, não fragmentos)
+            area = face.Area
+            if area > melhor_area:
+                melhor_area = area
+                melhor_face = face
+
+    if melhor_face is None:
+        return None, None
+
+    loops = melhor_face.GetEdgesAsCurveLoops()
+    if not loops:
+        return None, None
+
+    curve_loops = List[CurveLoop]()
+    origem      = None
+
+    for loop in loops:
+        curve_loops.Add(loop)
+        if origem is None:
+            # Pega o primeiro ponto do primeiro loop como origem
+            enumerator = loop.GetEnumerator()
+            if enumerator.MoveNext():
+                origem = enumerator.Current.GetEndPoint(0)
+
+    if curve_loops.Count == 0 or origem is None:
+        return None, None
+
+    return curve_loops, origem
+
+
+def criar_loop_simples(wall, transpasse_ft):
+    """
+    Fallback: loop retangular simples cobrindo a parede inteira
+    (usado apenas se get_face_loops_da_parede falhar).
+    """
+    p0     = wall.Location.Curve.GetEndPoint(0)
+    axis   = get_wall_axis(wall)
+    base_z = get_wall_base_z(wall)
+    top_z  = base_z + get_wall_height(wall) + transpasse_ft
+    L      = get_wall_length(wall)
+
+    bl = XYZ(p0.X,                   p0.Y,                   base_z)
+    br = XYZ(p0.X + axis.X * L,      p0.Y + axis.Y * L,      base_z)
+    tr = XYZ(p0.X + axis.X * L,      p0.Y + axis.Y * L,      top_z)
+    tl = XYZ(p0.X,                   p0.Y,                   top_z)
+
+    loop = CurveLoop()
+    loop.Append(Line.CreateBound(bl, br))
+    loop.Append(Line.CreateBound(br, tr))
+    loop.Append(Line.CreateBound(tr, tl))
+    loop.Append(Line.CreateBound(tl, bl))
+
+    loops = List[CurveLoop]()
+    loops.Add(loop)
+    return loops, bl
+
 
 # ── 1. COLETAR TIPOS ─────────────────────────────────────────
 fat_list = list(FilteredElementCollector(doc).OfClass(FabricAreaType).ToElements())
@@ -35,7 +188,7 @@ if not fst_list:
 fat_map = {get_name(t): t for t in fat_list}
 fst_map = {get_name(t): t for t in fst_list}
 
-# ── 2. SELECIONAR TIPO DE TELA ───────────────────────────────
+# ── 2. TIPO DE TELA ───────────────────────────────────────────
 fat_name = forms.SelectFromList.show(
     sorted(fat_map.keys()),
     title="Tipo de Tela Soldada",
@@ -47,7 +200,6 @@ if not fat_name:
 selected_fat        = fat_map[fat_name]
 fabric_area_type_id = selected_fat.Id
 
-# FabricSheetType automatico: "Tela POP Q92 (2,45 x 6,00)" -> "Q92 (2,45 x 6,00)"
 sheet_suffix = fat_name.replace("Tela POP ", "").strip()
 selected_fst = fst_map.get(sheet_suffix)
 if not selected_fst:
@@ -62,9 +214,8 @@ fabric_sheet_type_id = selected_fst.Id
 
 # ── 3. TRANSPASSE ─────────────────────────────────────────────
 fazer_transpasse = forms.alert(
-    u"Deseja adicionar transpasse acima do limite da parede?",
-    title="Transpasse",
-    yes=True, no=True
+    u"Deseja adicionar transpasse?",
+    title="Transpasse", yes=True, no=True
 )
 
 transpasse_ft  = 0.0
@@ -81,7 +232,7 @@ if fazer_transpasse:
     try:
         transpasse_ft  = float(txt) * CM_TO_FT
         transpasse_txt = "{} cm".format(txt)
-    except:
+    except Exception:
         forms.alert("Valor invalido.", exitscript=True)
 
 # ── 4. SELECIONAR PAREDES ─────────────────────────────────────
@@ -96,77 +247,58 @@ with forms.WarningBar(title="Selecione as paredes e pressione Enter"):
         refs  = uidoc.Selection.PickObjects(ObjectType.Element, WallFilter(), "Selecione as paredes")
         walls = [doc.GetElement(r.ElementId) for r in refs]
         walls = [w for w in walls if isinstance(w, Wall)]
-    except:
+    except Exception:
         walls = []
 
 if not walls:
     forms.alert("Nenhuma parede selecionada.", exitscript=True)
 
-# ─────────────────────────────────────────────
-RECUO_FT        = 0.0  * CM_TO_FT   
-RECOBRIMENTO_FT = 22.0 * MM_TO_FT   
+RECOBRIMENTO_FT = 22.0 * MM_TO_FT
 
-# ─────────────────────────────────────────
+# ── 5. CRIAR TELAS ────────────────────────────────────────────
 criados = 0
 erros   = []
 
 with revit.Transaction("Folha de Tela Soldada"):
     for wall in walls:
         try:
-            loc   = wall.Location
-            curve = loc.Curve
-            p0    = curve.GetEndPoint(0)
-            p1    = curve.GetEndPoint(1)
-            dx    = p1.X - p0.X
-            dy    = p1.Y - p0.Y
-            L     = (dx*dx + dy*dy) ** 0.5
-            axis  = XYZ(dx/L, dy/L, 0.0)
+            axis = get_wall_axis(wall)
 
-            
-            h_param   = wall.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM)
-            height_ft = h_param.AsDouble() if h_param else (2.7 / 0.3048)
+            # Tenta usar a geometria real da parede (com furos nativos)
+            curve_loops, origem = get_face_loops_da_parede(wall)
 
-            
-            bot_left  = XYZ(p0.X + axis.X*RECUO_FT, p0.Y + axis.Y*RECUO_FT, p0.Z)
-            bot_right = XYZ(p1.X - axis.X*RECUO_FT, p1.Y - axis.Y*RECUO_FT, p1.Z)
-            top_right = XYZ(p1.X - axis.X*RECUO_FT, p1.Y - axis.Y*RECUO_FT, p1.Z + height_ft + transpasse_ft)
-            top_left  = XYZ(p0.X + axis.X*RECUO_FT, p0.Y + axis.Y*RECUO_FT, p0.Z + height_ft + transpasse_ft)
+            # Fallback: loop simples sem furos
+            if curve_loops is None:
+                curve_loops, origem = criar_loop_simples(wall, transpasse_ft)
 
-            loop = CurveLoop()
-            loop.Append(Line.CreateBound(bot_left,  bot_right))
-            loop.Append(Line.CreateBound(bot_right, top_right))
-            loop.Append(Line.CreateBound(top_right, top_left))
-            loop.Append(Line.CreateBound(top_left,  bot_left))
-
-            curve_loops = List[CurveLoop]()
-            curve_loops.Add(loop)
-
-            # Create com geometria customizada
             fa = FabricArea.Create(
                 doc, wall, curve_loops,
-                axis, bot_left,
+                axis, origem,
                 fabric_area_type_id, fabric_sheet_type_id
             )
 
-            # Deslocamento adicional do recobrimento = 22 mm
             p_recob = fa.LookupParameter(u"Deslocamento adicional da recobrimento")
             if p_recob and not p_recob.IsReadOnly:
                 p_recob.Set(RECOBRIMENTO_FT)
+
+            if fazer_transpasse:
+                p_lap = fa.get_Parameter(BuiltInParameter.LAP_SPLICE_LENGTH)
+                if p_lap and not p_lap.IsReadOnly:
+                    p_lap.Set(transpasse_ft)
 
             criados += 1
 
         except Exception as e:
             erros.append(u"Parede {}: {}".format(wall.Id.IntegerValue, str(e)))
 
-# ── 7. RESUMO ─────────────────────────────────────────────────
+# ── 6. RESUMO ─────────────────────────────────────────────────
 msg = (
     u"Tela aplicada!\n\n"
-    u"Tipo    : {}\n"
-    u"Folha   : {}\n"
-    u"Paredes : {}/{}\n"
-    u"Recuo lateral : 5 cm cada lado\n"
-    u"Recobrimento  : 22 mm\n"
-    u"Transpasse    : {}"
+    u"Tipo         : {}\n"
+    u"Folha        : {}\n"
+    u"Paredes      : {}/{}\n"
+    u"Recobrimento : 22 mm\n"
+    u"Transpasse   : {}"
 ).format(fat_name, get_name(selected_fst), criados, len(walls), transpasse_txt)
 
 if erros:
