@@ -149,7 +149,6 @@ def create_wall_rebars(wall, config):
     spacing     = cm_to_feet(config["espacamento"])
     cover       = cm_to_feet(config["cobrimento"])
     hook        = cm_to_feet(config["dobra_comp"])
-    base_ext    = cm_to_feet(config["base_comp"])
     altura      = cm_to_feet(config["altura"])
     embutimento = cm_to_feet(config["embutimento"])
 
@@ -189,8 +188,6 @@ def create_wall_rebars(wall, config):
         if hook > 0:
             curves.append(Line.CreateBound(p2, p2 + (direction * hook)))
 
-        if base_ext > 0:
-            curves.insert(0, Line.CreateBound(p1 - (direction * base_ext), p1))
 
         try:
             rebar = Rebar.CreateFromCurves(
@@ -284,11 +281,6 @@ XAML = u"""
                BorderBrush="#BBBBBB" Background="White"
                VerticalContentAlignment="Center"/>
 
-      <TextBlock Text="Extensao na base (cm)" Foreground="#222" Margin="0,8,0,2"/>
-      <TextBox x:Name="txtBase" Text="0"
-               Height="26" Padding="5,3"
-               BorderBrush="#BBBBBB" Background="White"
-               VerticalContentAlignment="Center"/>
 
       <!-- AVISO ABERTURAS -->
       <Border Background="#E3F2FD" CornerRadius="4"
@@ -364,7 +356,6 @@ class PaliteiroForm(forms.WPFWindow):
             "altura":       self._float(self.txtAltura,      60.0),
             "embutimento":  self._float(self.txtEmbutimento,  5.0),
             "dobra_comp":   self._float(self.txtDobra,       20.0),
-            "base_comp":    self._float(self.txtBase,         0.0),
         }
         self.Close()
 
