@@ -1,20 +1,11 @@
 # -*- coding: utf-8 -*-
-"""
+
 __title__   = "Renomear Paredes"
 __author__  = "Samuel"
-__version__ = "Versao 1.0"
+__version__ = "Versao 1.4"
+__doc__ = "Renomeia automaticamente o parametro Marca das paredes selecionadas pelo usuario, seguindo o padrao PR01_NIVEL, PR02_NIVEL etc."
 
-Descricao:
-    Renomeia automaticamente o parametro "Marca" (Mark) das paredes
-    selecionadas pelo usuario, seguindo o padrao PR01, PR02, etc.
-
-Fluxo:
-    1. Script abre o formulario.
-    2. Usuario define o numero inicial.
-    3. Usuario clica em OK -> janela some -> usuario seleciona as paredes no modelo.
-    4. Usuario finaliza a selecao pressionando ENTER ou clicando com botao direito.
-    5. Script renomeia e exibe o resumo.
-"""
+   
 
 # ==============================================================================
 # IMPORTS
@@ -38,6 +29,7 @@ from Autodesk.Revit.UI.Selection import (
 )
 
 import System
+import math
 from System.Windows.Forms import (
     Form,
     Label,
@@ -62,15 +54,20 @@ from System.Drawing import (
 )
 
 # ==============================================================================
-# VARIAVEIS GLOBAIS DO REVIT (injetadas automaticamente pelo pyRevit)
+# VARIAVEIS GLOBAIS DO REVIT
 # ==============================================================================
 doc   = __revit__.ActiveUIDocument.Document
 uidoc = __revit__.ActiveUIDocument
 
 
-# ==============================================================================
-# FILTRO DE SELECAO: apenas paredes
-# ==============================================================================
+TOLERANCIA_COLUNA_FT = 3.28084
+
+# Tolerancia angular (em graus) para classificar uma parede como
+# "vertical" (Norte-Sul) ou "horizontal" (Leste-Oeste). Paredes em
+# diagonal caem no grupo mais proximo do angulo medido.
+TOLERANCIA_ANGULO_GRAUS = 45.0
+
+
 class FiltroParedes(ISelectionFilter):
     """
     Filtro para o PickObjects: permite selecionar apenas elementos
@@ -111,8 +108,8 @@ class RenomearParedesForm(Form):
         # JANELA PRINCIPAL
         # ------------------------------------------------------------------
         self.Text            = "Renomear Paredes - Marca (Mark)"
-        self.Size            = Size(420, 310)
-        self.MinimumSize     = Size(420, 310)
+        self.Size            = Size(440, 360)
+        self.MinimumSize     = Size(440, 360)
         self.MaximizeBox     = False
         self.MinimizeBox     = False
         self.FormBorderStyle = FormBorderStyle.FixedDialog
@@ -123,7 +120,7 @@ class RenomearParedesForm(Form):
         # CABECALHO AZUL
         # ------------------------------------------------------------------
         painel_header           = Panel()
-        painel_header.Size      = Size(420, 60)
+        painel_header.Size      = Size(440, 60)
         painel_header.Location  = Point(0, 0)
         painel_header.BackColor = Color.FromArgb(41, 128, 185)
 
@@ -131,7 +128,7 @@ class RenomearParedesForm(Form):
         lbl_titulo.Text      = "  Renomear Paredes"
         lbl_titulo.Font      = Font("Segoe UI", 13, FontStyle.Bold)
         lbl_titulo.ForeColor = Color.White
-        lbl_titulo.Size      = Size(400, 35)
+        lbl_titulo.Size      = Size(420, 35)
         lbl_titulo.Location  = Point(10, 12)
         painel_header.Controls.Add(lbl_titulo)
         self.Controls.Add(painel_header)
@@ -142,12 +139,14 @@ class RenomearParedesForm(Form):
         lbl_instrucao           = Label()
         lbl_instrucao.Text      = (
             "1. Informe o numero inicial abaixo.\n"
-            "2. Clique em OK.\n"
-            "3. Selecione as paredes no modelo (ENTER para finalizar)."
+            "2. Selecione as paredes no modelo (ENTER para finalizar).\n"
+            "As paredes verticais (Norte-Sul) sao numeradas primeiro,\n"
+            "seguindo Oeste->Leste / Norte->Sul. As horizontais entram\n"
+            "depois, ao final, na mesma sequencia."
         )
         lbl_instrucao.Font      = Font("Segoe UI", 9, FontStyle.Regular)
         lbl_instrucao.ForeColor = Color.FromArgb(70, 70, 70)
-        lbl_instrucao.Size      = Size(380, 60)
+        lbl_instrucao.Size      = Size(400, 95)
         lbl_instrucao.Location  = Point(20, 72)
         self.Controls.Add(lbl_instrucao)
 
@@ -155,22 +154,22 @@ class RenomearParedesForm(Form):
         # LABEL: PADRAO
         # ------------------------------------------------------------------
         lbl_padrao           = Label()
-        lbl_padrao.Text      = "Padrao gerado: PR01, PR02, PR03 ..."
+        lbl_padrao.Text      = "Padrao gerado: PR01_NIVEL, PR02_NIVEL ... (reinicia por nivel)"
         lbl_padrao.Font      = Font("Segoe UI", 9, FontStyle.Italic)
         lbl_padrao.ForeColor = Color.FromArgb(120, 120, 120)
-        lbl_padrao.Size      = Size(380, 20)
-        lbl_padrao.Location  = Point(20, 138)
+        lbl_padrao.Size      = Size(400, 20)
+        lbl_padrao.Location  = Point(20, 172)
         self.Controls.Add(lbl_padrao)
 
         # ------------------------------------------------------------------
         # LABEL: NUMERO INICIAL
         # ------------------------------------------------------------------
         lbl_numero           = Label()
-        lbl_numero.Text      = "Numero inicial da sequencia:"
+        lbl_numero.Text      = "Numero inicial da sequencia (em cada nivel):"
         lbl_numero.Font      = Font("Segoe UI", 10, FontStyle.Bold)
         lbl_numero.ForeColor = Color.FromArgb(50, 50, 50)
-        lbl_numero.Size      = Size(380, 22)
-        lbl_numero.Location  = Point(20, 165)
+        lbl_numero.Size      = Size(400, 22)
+        lbl_numero.Location  = Point(20, 197)
         self.Controls.Add(lbl_numero)
 
         # ------------------------------------------------------------------
@@ -179,7 +178,7 @@ class RenomearParedesForm(Form):
         self.txt_numero             = TextBox()
         self.txt_numero.Font        = Font("Segoe UI", 12, FontStyle.Regular)
         self.txt_numero.Size        = Size(100, 30)
-        self.txt_numero.Location    = Point(20, 191)
+        self.txt_numero.Location    = Point(20, 223)
         self.txt_numero.Text        = "1"
         self.txt_numero.TabIndex    = 0
         self.txt_numero.BorderStyle = BorderStyle.FixedSingle
@@ -190,11 +189,11 @@ class RenomearParedesForm(Form):
         # LABEL: PREVIEW DINAMICO
         # ------------------------------------------------------------------
         self.lbl_preview           = Label()
-        self.lbl_preview.Text      = "Preview: PR01, PR02, PR03 ..."
+        self.lbl_preview.Text      = "Preview: PR01_<NIVEL>, PR02_<NIVEL> ..."
         self.lbl_preview.Font      = Font("Segoe UI", 9, FontStyle.Italic)
         self.lbl_preview.ForeColor = Color.FromArgb(41, 128, 185)
-        self.lbl_preview.Size      = Size(270, 22)
-        self.lbl_preview.Location  = Point(130, 196)
+        self.lbl_preview.Size      = Size(300, 22)
+        self.lbl_preview.Location  = Point(130, 228)
         self.Controls.Add(self.lbl_preview)
 
         # Evento: atualiza preview ao digitar
@@ -207,7 +206,7 @@ class RenomearParedesForm(Form):
         btn_ok.Text      = "Selecionar Paredes"
         btn_ok.Font      = Font("Segoe UI", 10, FontStyle.Bold)
         btn_ok.Size      = Size(200, 36)
-        btn_ok.Location  = Point(20, 240)
+        btn_ok.Location  = Point(20, 285)
         btn_ok.BackColor = Color.FromArgb(41, 128, 185)
         btn_ok.ForeColor = Color.White
         btn_ok.FlatStyle = FlatStyle.Flat
@@ -223,7 +222,7 @@ class RenomearParedesForm(Form):
         btn_cancelar.Text      = "Cancelar"
         btn_cancelar.Font      = Font("Segoe UI", 10, FontStyle.Regular)
         btn_cancelar.Size      = Size(110, 36)
-        btn_cancelar.Location  = Point(235, 240)
+        btn_cancelar.Location  = Point(235, 285)
         btn_cancelar.BackColor = Color.FromArgb(200, 200, 200)
         btn_cancelar.ForeColor = Color.FromArgb(50, 50, 50)
         btn_cancelar.FlatStyle = FlatStyle.Flat
@@ -249,10 +248,9 @@ class RenomearParedesForm(Form):
             if valor < 0:
                 self.lbl_preview.Text = "Numero invalido"
                 return
-            p1 = "PR{0:02d}".format(valor)
-            p2 = "PR{0:02d}".format(valor + 1)
-            p3 = "PR{0:02d}".format(valor + 2)
-            self.lbl_preview.Text = "Preview: {0}, {1}, {2} ...".format(p1, p2, p3)
+            p1 = "PR{0:02d}_<NIVEL>".format(valor)
+            p2 = "PR{0:02d}_<NIVEL>".format(valor + 1)
+            self.lbl_preview.Text = "Preview: {0}, {1} ...".format(p1, p2)
         except (ValueError, System.FormatException):
             self.lbl_preview.Text = "Digite um numero valido"
 
@@ -321,8 +319,9 @@ def selecionar_paredes_no_modelo(numero_inicial):
     """
     filtro = FiltroParedes()
     dica   = (
-        "Clique nas paredes para selecionar (comecando em PR{0:02d}). "
-        "Pressione ENTER ou clique com botao direito para finalizar."
+        "Clique nas paredes para selecionar (numeracao reinicia em PR{0:02d} "
+        "para cada nivel, com sufixo do nivel). Pressione ENTER ou clique "
+        "com botao direito para finalizar."
     ).format(numero_inicial)
 
     try:
@@ -349,17 +348,353 @@ def selecionar_paredes_no_modelo(numero_inicial):
         return []
 
 
-def formatar_marca(numero):
+def obter_nome_nivel(parede):
     """
-    Formata o numero seguindo o padrao PR##.
+    Retorna o nome do nivel (pavimento) ao qual a parede pertence,
+    usando o parametro de Base Constraint (Restricao da Base) da parede.
+    Ex: "TERREO", "1 PAVTO", "LAJE COBERTURA", "PLATIBANDA", etc.
+
+    Args:
+        parede: Elemento Wall do Revit.
+
+    Returns:
+        str: Nome do nivel, ou "SEM NIVEL" se nao for possivel determinar.
+    """
+    try:
+        level_param = parede.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT)
+        if level_param is None:
+            return "SEM NIVEL"
+
+        level_id = level_param.AsElementId()
+        if level_id is None or level_id == ElementId.InvalidElementId:
+            return "SEM NIVEL"
+
+        level = doc.GetElement(level_id)
+        if level is None:
+            return "SEM NIVEL"
+
+        return level.Name
+
+    except Exception:
+        return "SEM NIVEL"
+
+
+def obter_elevacao_nivel(parede):
+    """
+    Retorna a elevacao (Z) do nivel de Base Constraint da parede.
+    """
+    try:
+        level_param = parede.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT)
+        if level_param is None:
+            return 0.0
+
+        level_id = level_param.AsElementId()
+        if level_id is None or level_id == ElementId.InvalidElementId:
+            return 0.0
+
+        level = doc.GetElement(level_id)
+        if level is None:
+            return 0.0
+
+        return level.Elevation
+
+    except Exception:
+        return 0.0
+
+
+def agrupar_paredes_por_nivel(paredes):
+    """
+    Agrupa as paredes por nivel (pavimento/laje), preservando a ordem
+    de elevacao (do nivel mais baixo para o mais alto).
+
+    Paredes sem nivel identificavel sao agrupadas em "SEM NIVEL" e
+    posicionadas por ultimo.
+
+    Args:
+        paredes (list): Elementos Wall.
+
+    Returns:
+        list: Lista de tuplas (nome_nivel, elevacao, [paredes]),
+              ordenada por elevacao crescente (SEM NIVEL ao final).
+    """
+    grupos = {}
+
+    for parede in paredes:
+        nome_nivel = obter_nome_nivel(parede)
+        elevacao   = obter_elevacao_nivel(parede)
+
+        if nome_nivel not in grupos:
+            grupos[nome_nivel] = {"elevacao": elevacao, "itens": []}
+
+        grupos[nome_nivel]["itens"].append(parede)
+
+    resultado = []
+    for nome_nivel, dados in grupos.items():
+        resultado.append((nome_nivel, dados["elevacao"], dados["itens"]))
+
+    # Ordena por elevacao crescente; "SEM NIVEL" sempre por ultimo
+    def chave_ordenacao(grupo):
+        nome, elevacao, _itens = grupo
+        if nome == "SEM NIVEL":
+            return (1, 0.0)
+        return (0, elevacao)
+
+    resultado.sort(key=chave_ordenacao)
+
+    return resultado
+
+
+def obter_ponto_referencia(parede):
+    """
+    Retorna o ponto medio (X, Y) da linha de localizacao da parede,
+    usado para ordenacao espacial.
+
+    Args:
+        parede: Elemento Wall do Revit.
+
+    Returns:
+        tuple: (x, y) em pes. (0.0, 0.0) se a parede nao tiver Location.Curve.
+    """
+    loc = parede.Location
+    if hasattr(loc, "Curve"):
+        curve = loc.Curve
+        p0 = curve.GetEndPoint(0)
+        p1 = curve.GetEndPoint(1)
+        x = (p0.X + p1.X) / 2.0
+        y = (p0.Y + p1.Y) / 2.0
+        return (x, y)
+    return (0.0, 0.0)
+
+
+def obter_angulo_parede_graus(parede):
+    """
+    Calcula o angulo da linha de localizacao da parede em relacao ao
+    eixo X (Leste), em graus, normalizado no intervalo [0, 180).
+
+    Uma parede com angulo proximo de 0 ou 180 esta "deitada"
+    (sentido Leste-Oeste / horizontal).
+    Uma parede com angulo proximo de 90 esta "em pe"
+    (sentido Norte-Sul / vertical).
+
+    Args:
+        parede: Elemento Wall do Revit.
+
+    Returns:
+        float: Angulo em graus, no intervalo [0, 180). 0.0 se nao
+               for possivel calcular (ex: parede sem Location.Curve
+               valido, ou comprimento nulo).
+    """
+    loc = parede.Location
+    if not hasattr(loc, "Curve"):
+        return 0.0
+
+    curve = loc.Curve
+    p0 = curve.GetEndPoint(0)
+    p1 = curve.GetEndPoint(1)
+
+    dx = p1.X - p0.X
+    dy = p1.Y - p0.Y
+
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return 0.0
+
+    angulo = math.degrees(math.atan2(dy, dx))
+
+    # Normaliza para [0, 180) - direcao da reta, sem distinguir sentido
+    angulo = angulo % 180.0
+    if angulo < 0:
+        angulo += 180.0
+
+    return angulo
+
+
+def parede_e_vertical(parede, tolerancia_graus=TOLERANCIA_ANGULO_GRAUS):
+    """
+    Classifica a parede como "vertical" (Norte-Sul / "em pe") ou nao,
+    com base no angulo da sua linha de localizacao.
+
+    Paredes com angulo entre (90 - tolerancia) e (90 + tolerancia) sao
+    consideradas verticais - ou seja, perpendiculares a linha de
+    varredura Oeste->Leste, e por isso "atingidas" por ela.
+
+    Com a tolerancia padrao de 45 graus, toda parede e classificada
+    como vertical OU horizontal (sem zona neutra), dividindo o
+    intervalo [0, 180) exatamente na metade: [45, 135) = vertical,
+    o restante = horizontal.
+
+    Args:
+        parede: Elemento Wall do Revit.
+        tolerancia_graus (float): Faixa ao redor de 90 graus considerada
+            "vertical".
+
+    Returns:
+        bool: True se a parede for considerada vertical (perpendicular
+              a varredura O->L), False se horizontal (paralela).
+    """
+    angulo = obter_angulo_parede_graus(parede)
+    limite_inferior = 90.0 - tolerancia_graus
+    limite_superior = 90.0 + tolerancia_graus
+    return limite_inferior <= angulo < limite_superior
+
+
+def ordenar_paredes_espacialmente(paredes, tolerancia_coluna_ft=TOLERANCIA_COLUNA_FT):
+    """
+    Ordena as paredes seguindo leitura tipo planta/bussola:
+    agrupadas em colunas de Oeste para Leste (menor X primeiro)
+    e, dentro de cada coluna, de Norte para Sul (maior Y primeiro).
+
+    Args:
+        paredes (list): Elementos Wall.
+        tolerancia_coluna_ft (float): Diferenca de X (em pes) para
+            considerar duas paredes na mesma "coluna". Default ~1 metro.
+
+    Returns:
+        list: Paredes ordenadas.
+    """
+    pontos = [(p, obter_ponto_referencia(p)) for p in paredes]
+
+    # Ordena por X crescente (Oeste primeiro)
+    pontos.sort(key=lambda item: item[1][0])
+
+    colunas = []
+    for parede, (x, y) in pontos:
+        encaixou = False
+        for coluna in colunas:
+            if abs(coluna["x_ref"] - x) <= tolerancia_coluna_ft:
+                coluna["itens"].append((parede, x, y))
+                encaixou = True
+                break
+        if not encaixou:
+            colunas.append({"x_ref": x, "itens": [(parede, x, y)]})
+
+    resultado = []
+    for coluna in colunas:
+        # Dentro da coluna: Y decrescente (Norte para Sul)
+        itens_ordenados = sorted(coluna["itens"], key=lambda t: -t[2])
+        resultado.extend([item[0] for item in itens_ordenados])
+
+    return resultado
+
+
+def separar_por_orientacao(paredes):
+    """
+    Separa as paredes em dois grupos, de acordo com a orientacao da
+    linha de localizacao em relacao a linha de varredura Oeste->Leste:
+
+      - verticais   : paredes "em pe" (Norte-Sul), perpendiculares a
+                       varredura O->L - entram na sequencia PRINCIPAL.
+      - horizontais : paredes "deitadas" (Leste-Oeste), paralelas a
+                       varredura O->L - entram na sequencia FINAL
+                       (numeradas depois, fora da sequencia principal).
+
+    Args:
+        paredes (list): Elementos Wall (de um mesmo nivel).
+
+    Returns:
+        tuple: (verticais, horizontais), ambas listas de elementos Wall,
+               sem ordenacao espacial aplicada ainda.
+    """
+    verticais   = []
+    horizontais = []
+
+    for parede in paredes:
+        if parede_e_vertical(parede):
+            verticais.append(parede)
+        else:
+            horizontais.append(parede)
+
+    return verticais, horizontais
+
+
+def remover_acentos(texto):
+    """
+    Remove acentos comuns do portugues, convertendo para caracteres
+    ASCII equivalentes. Implementado sem dependencia de modulos
+    externos (ex: unicodedata) para maior compatibilidade com IronPython 2.
+
+    Args:
+        texto (str): Texto de entrada, possivelmente acentuado.
+
+    Returns:
+        unicode: Texto sem acentos.
+    """
+    if not texto:
+        return u""
+
+    mapa_acentos = {
+        u"\u00e1": u"a", u"\u00e0": u"a", u"\u00e3": u"a", u"\u00e2": u"a", u"\u00e4": u"a",
+        u"\u00e9": u"e", u"\u00e8": u"e", u"\u00ea": u"e", u"\u00eb": u"e",
+        u"\u00ed": u"i", u"\u00ec": u"i", u"\u00ee": u"i", u"\u00ef": u"i",
+        u"\u00f3": u"o", u"\u00f2": u"o", u"\u00f5": u"o", u"\u00f4": u"o", u"\u00f6": u"o",
+        u"\u00fa": u"u", u"\u00f9": u"u", u"\u00fb": u"u", u"\u00fc": u"u",
+        u"\u00e7": u"c", u"\u00f1": u"n",
+        u"\u00c1": u"A", u"\u00c0": u"A", u"\u00c3": u"A", u"\u00c2": u"A", u"\u00c4": u"A",
+        u"\u00c9": u"E", u"\u00c8": u"E", u"\u00ca": u"E", u"\u00cb": u"E",
+        u"\u00cd": u"I", u"\u00cc": u"I", u"\u00ce": u"I", u"\u00cf": u"I",
+        u"\u00d3": u"O", u"\u00d2": u"O", u"\u00d5": u"O", u"\u00d4": u"O", u"\u00d6": u"O",
+        u"\u00da": u"U", u"\u00d9": u"U", u"\u00db": u"U", u"\u00dc": u"U",
+        u"\u00c7": u"C", u"\u00d1": u"N",
+    }
+
+    resultado = u""
+    for caractere in texto:
+        resultado += mapa_acentos.get(caractere, caractere)
+
+    return resultado
+
+
+def sanitizar_sufixo_nivel(nome_nivel):
+    """
+    Converte o nome do nivel num sufixo limpo para compor a Marca,
+    removendo acentos, espacos e caracteres especiais e deixando
+    tudo em caixa alta.
+
+    Ex: "1 PAVTO" -> "1PAVTO" ; "Laje Cobertura" -> "LAJECOBERTURA"
+        "Platibanda" -> "PLATIBANDA"
+
+    Args:
+        nome_nivel (str): Nome do nivel (Base Constraint) da parede.
+
+    Returns:
+        str: Sufixo normalizado, sem espacos/acentos/caracteres especiais.
+    """
+    if not nome_nivel:
+        return ""
+
+    texto = remover_acentos(nome_nivel)
+    texto = texto.upper()
+
+    sufixo = ""
+    for caractere in texto:
+        if caractere.isalnum():
+            sufixo += caractere
+        # demais caracteres (espacos, hifens, underscores, etc.) sao descartados
+
+    return sufixo
+
+
+def formatar_marca(numero, nome_nivel=""):
+    """
+    Formata o numero seguindo o padrao PR##_NIVEL.
+
+    O sufixo do nivel permite que a mesma sequencia numerica (ex: PR01)
+    se repita em niveis diferentes sem gerar Marca duplicada no modelo,
+    pois o valor final ja inclui o nivel de origem da parede.
+    Ex: "PR01_TERREO", "PR01_PLATIBANDA", "PR12_1PAVTO".
 
     Args:
         numero (int): Numero sequencial da parede.
+        nome_nivel (str): Nome do nivel (Base Constraint) da parede.
 
     Returns:
-        str: Ex: "PR01", "PR12", "PR100".
+        str: Marca formatada.
     """
-    return "PR{0:02d}".format(numero)
+    base   = "PR{0:02d}".format(numero)
+    sufixo = sanitizar_sufixo_nivel(nome_nivel)
+
+    if sufixo:
+        return "{0}_{1}".format(base, sufixo)
+    return base
 
 
 def definir_parametro_mark(elemento, valor):
@@ -392,37 +727,64 @@ def definir_parametro_mark(elemento, valor):
         return False
 
 
-def renomear_paredes(paredes, numero_inicial):
+def renomear_paredes(grupos_por_nivel, numero_inicial):
     """
     Executa a renomeacao dentro de uma Transaction.
+    A numeracao reinicia em "numero_inicial" para CADA nivel.
+
+    Dentro de cada nivel, a ordem de numeracao e:
+      1. Paredes verticais (Norte-Sul / "em pe") - sequencia PRINCIPAL,
+         ordenadas Oeste->Leste e, dentro da coluna, Norte->Sul.
+      2. Paredes horizontais (Leste-Oeste / "deitadas") - sequencia
+         FINAL, continuando a contagem de onde a principal parou,
+         seguindo a mesma logica espacial entre elas.
+
+    A Marca final de cada parede recebe o sufixo do respectivo nivel.
 
     Args:
-        paredes (list): Elementos Wall a renomear.
-        numero_inicial (int): Numero inicial da sequencia.
+        grupos_por_nivel (list): Lista de tuplas
+            (nome_nivel, elevacao, [verticais_ordenadas], [horizontais_ordenadas]).
+        numero_inicial (int): Numero inicial da sequencia em cada nivel.
 
     Returns:
-        tuple: (renomeadas, erros, sem_param)
+        tuple: (renomeadas, erros, sem_param, resumo_por_nivel)
+            resumo_por_nivel (list): Lista de tuplas
+                (nome_nivel, qtd_paredes, marca_inicial, marca_final).
     """
     renomeadas = 0
     erros      = 0
     sem_param  = 0
+    resumo_por_nivel = []
 
     t = Transaction(doc, "Renomear Marca das Paredes")
     t.Start()
 
     try:
-        for i, parede in enumerate(paredes):
-            numero = numero_inicial + i
-            marca  = formatar_marca(numero)
+        for nome_nivel, _elevacao, verticais, horizontais in grupos_por_nivel:
 
-            try:
-                sucesso = definir_parametro_mark(parede, marca)
-                if sucesso:
-                    renomeadas += 1
-                else:
-                    sem_param += 1
-            except Exception:
-                erros += 1
+            # Sequencia principal (verticais) seguida da sequencia final
+            # (horizontais), na ordem certa de numeracao.
+            paredes_em_ordem = list(verticais) + list(horizontais)
+
+            if not paredes_em_ordem:
+                continue
+
+            for i, parede in enumerate(paredes_em_ordem):
+                numero = numero_inicial + i
+                marca  = formatar_marca(numero, nome_nivel)
+
+                try:
+                    sucesso = definir_parametro_mark(parede, marca)
+                    if sucesso:
+                        renomeadas += 1
+                    else:
+                        sem_param += 1
+                except Exception:
+                    erros += 1
+
+            marca_inicial = formatar_marca(numero_inicial, nome_nivel)
+            marca_final   = formatar_marca(numero_inicial + len(paredes_em_ordem) - 1, nome_nivel)
+            resumo_por_nivel.append((nome_nivel, len(paredes_em_ordem), marca_inicial, marca_final))
 
         t.Commit()
 
@@ -430,12 +792,12 @@ def renomear_paredes(paredes, numero_inicial):
         t.RollBack()
         raise ex
 
-    return renomeadas, erros, sem_param
+    return renomeadas, erros, sem_param, resumo_por_nivel
 
 
-def exibir_resultado(renomeadas, erros, sem_param, total):
+def exibir_resultado(renomeadas, erros, sem_param, total, resumo_por_nivel):
     """
-    Exibe o resumo final da operacao ao usuario.
+    Exibe um MessageBox com o resumo final da operacao.
     """
     linhas = [
         "Operacao concluida!",
@@ -448,6 +810,13 @@ def exibir_resultado(renomeadas, erros, sem_param, total):
         linhas.append("Sem parametro Mark  : {0}".format(sem_param))
     if erros > 0:
         linhas.append("Com erro            : {0}".format(erros))
+
+    linhas.append("")
+    linhas.append("Detalhamento por nivel:")
+    for nome_nivel, qtd, marca_ini, marca_fim in resumo_por_nivel:
+        linhas.append("  {0}: {1} parede(s)  ->  {2} a {3}".format(
+            nome_nivel, qtd, marca_ini, marca_fim
+        ))
 
     icone = MessageBoxIcon.Information if erros == 0 else MessageBoxIcon.Warning
 
@@ -468,8 +837,13 @@ def main():
     Fluxo principal:
       1. Abre o formulario para o usuario definir o numero inicial.
       2. Fecha o formulario e ativa a selecao interativa no modelo.
-      3. Renomeia as paredes selecionadas.
-      4. Exibe o resumo.
+      3. Agrupa as paredes por NIVEL (pavimento, laje, etc.).
+      4. Dentro de cada nivel, separa por orientacao (vertical/horizontal)
+         e ordena espacialmente cada grupo (Oeste->Leste, Norte->Sul).
+      5. Renomeia as paredes: verticais primeiro (sequencia principal),
+         horizontais depois (sequencia final), reiniciando a numeracao
+         em cada nivel e compondo a Marca com o sufixo do nivel.
+      6. Exibe o resumo detalhado por nivel.
     """
 
     # --------------------------------------------------------------------------
@@ -500,14 +874,53 @@ def main():
         return
 
     # --------------------------------------------------------------------------
-    # ETAPA 3: Confirmacao rapida antes de aplicar
+    # ETAPA 3: Agrupamento por nivel (pavimento, laje, etc.)
     # --------------------------------------------------------------------------
-    p_inicio = formatar_marca(numero_inicial)
-    p_fim    = formatar_marca(numero_inicial + len(paredes) - 1)
+    grupos_por_nivel = agrupar_paredes_por_nivel(paredes)
+
+    # --------------------------------------------------------------------------
+    # ETAPA 4: Separacao por orientacao + ordenacao espacial dentro
+    #          de cada nivel (Oeste -> Leste, Norte -> Sul)
+    # --------------------------------------------------------------------------
+    grupos_ordenados = []
+    for nome_nivel, elevacao, paredes_do_nivel in grupos_por_nivel:
+        verticais, horizontais = separar_por_orientacao(paredes_do_nivel)
+
+        verticais_ordenadas   = ordenar_paredes_espacialmente(verticais)
+        horizontais_ordenadas = ordenar_paredes_espacialmente(horizontais)
+
+        grupos_ordenados.append((
+            nome_nivel, elevacao, verticais_ordenadas, horizontais_ordenadas
+        ))
+
+    # --------------------------------------------------------------------------
+    # ETAPA 5: Confirmacao rapida antes de aplicar
+    # --------------------------------------------------------------------------
+    linhas_preview = [
+        "Confirma a renomeacao de {0} parede(s)?".format(len(paredes)),
+        "",
+        "A numeracao reinicia em {0:02d} para cada nivel, com sufixo do nivel.".format(numero_inicial),
+        "Ordem: verticais (O->L, N->S) primeiro, horizontais depois.",
+        "",
+        "Niveis encontrados:",
+    ]
+    for nome_nivel, _elevacao, verticais, horizontais in grupos_ordenados:
+        total_nivel = len(verticais) + len(horizontais)
+        if total_nivel == 0:
+            continue
+        marca_ini_nivel = formatar_marca(numero_inicial, nome_nivel)
+        marca_fim_nivel = formatar_marca(numero_inicial + total_nivel - 1, nome_nivel)
+        linhas_preview.append("  - {0}: {1} parede(s) ({2} a {3})  [{4} vert. / {5} horiz.]".format(
+            nome_nivel,
+            total_nivel,
+            marca_ini_nivel,
+            marca_fim_nivel,
+            len(verticais),
+            len(horizontais)
+        ))
 
     confirmacao = MessageBox.Show(
-        "Confirma a renomeacao de {0} parede(s)?\n\n"
-        "Sequencia: {1}  ate  {2}".format(len(paredes), p_inicio, p_fim),
+        "\n".join(linhas_preview),
         "Confirmar Renomeacao",
         MessageBoxButtons.OKCancel,
         MessageBoxIcon.Question
@@ -517,11 +930,13 @@ def main():
         return
 
     # --------------------------------------------------------------------------
-    # ETAPA 4: Execucao da renomeacao
+    # ETAPA 6: Execucao da renomeacao
     # --------------------------------------------------------------------------
     try:
-        renomeadas, erros, sem_param = renomear_paredes(paredes, numero_inicial)
-        exibir_resultado(renomeadas, erros, sem_param, len(paredes))
+        renomeadas, erros, sem_param, resumo_por_nivel = renomear_paredes(
+            grupos_ordenados, numero_inicial
+        )
+        exibir_resultado(renomeadas, erros, sem_param, len(paredes), resumo_por_nivel)
 
     except Exception as ex:
         MessageBox.Show(
@@ -534,7 +949,6 @@ def main():
 
 
 # ==============================================================================
-# EXECUCAO
 # ==============================================================================
 if __name__ == "__main__":
     main()
