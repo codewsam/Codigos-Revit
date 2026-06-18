@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-__title__   = "Checklist NBR 6118 (não finalizado)"
+__title__   = "Tela de Laje"
 __author__  = "Samuel"
 __version__ = "Versao 1.0"
 
@@ -13,567 +13,375 @@ from Autodesk.Revit.DB import *
 from Autodesk.Revit.DB.Structure import *
 from System.Collections.Generic import List
 from System.Windows.Forms import (
-    Form, Label, ComboBox, TextBox, Button, ListBox, GroupBox,
+    Form, Label, ComboBox, TextBox, Button,
     DialogResult, FormBorderStyle, FormStartPosition,
-    ComboBoxStyle, MessageBox, MessageBoxButtons, MessageBoxIcon,
-    RichTextBoxScrollBars, RichTextBox, Panel, CheckBox, ProgressBar,
-    Application, SaveFileDialog
+    ComboBoxStyle, MessageBox, MessageBoxButtons, MessageBoxIcon
 )
-from System.Drawing import Size, Point, Color, Font, FontStyle
+from System.Drawing import Size, Point
 from pyrevit import forms, revit, script
 
-import sys
-import os
 
-# ─────────────────────────────────────────────
-#  CONSTANTES NBR 6118
-# ─────────────────────────────────────────────
+doc   = __revit__.ActiveUIDocument.Document
+uidoc = __revit__.ActiveUIDocument
 
-# Cobrimento nominal mínimo (mm) por classe de agressividade
-# Tabela 7.2 da NBR 6118:2014
-COBRIMENTO_MINIMO = {
-    "I - Fraca (rural/suburbano seco)": {
-        "laje": 20,
-        "viga": 25,
-        "pilar": 25,
-    },
-    "II - Moderada (urbano)": {
-        "laje": 25,
-        "viga": 30,
-        "pilar": 30,
-    },
-    "III - Forte (marinha/industrial)": {
-        "laje": 35,
-        "viga": 40,
-        "pilar": 40,
-    },
-    "IV - Muito Forte (submerso/respingos)": {
-        "laje": 45,
-        "viga": 50,
-        "pilar": 50,
-    },
-}
+CM_TO_FT = 1.0 / 30.48
+MM_TO_FT = 1.0 / 304.8
+FT_TO_CM = 30.48
 
-# Dimensões mínimas (mm) - NBR 6118 itens 13.2 e 18.4
-DIM_MIN = {
-    "viga_largura":  120,   # largura mínima de viga (mm)
-    "pilar_menor":   190,   # menor dimensão de pilar (mm)
-    "laje_espessura": 70,   # espessura mínima de laje maciça (mm)
-}
-
-# Taxa de armadura longitudinal (%) - NBR 6118 item 17.3.5
-TAXA_ARMADURA = {
-    "pilar_min": 0.4,
-    "pilar_max": 8.0,
-    "viga_min":  0.15,
-    "viga_max":  4.0,
-}
-
-STATUS_OK      = "OK"
-STATUS_ALERTA  = "ALERTA"
-STATUS_FALHA   = "FALHA"
-STATUS_ND      = "N/D"   # parâmetro não encontrado no modelo
-
-# ─────────────────────────────────────────────
-#  FUNÇÕES AUXILIARES
-# ─────────────────────────────────────────────
-
-def get_param_value(element, names):
-    """
-    Tenta ler um parâmetro pelo nome (aceita lista de nomes alternativos).
-    Retorna o valor numérico em mm ou None se não encontrado.
-    """
-    if isinstance(names, str):
-        names = [names]
-    for name in names:
-        param = element.LookupParameter(name)
-        if param and param.HasValue:
-            try:
-                # Converte de pés (unidade interna Revit) para mm
-                return UnitUtils.ConvertFromInternalUnits(
-                    param.AsDouble(),
-                    UnitTypeId.Millimeters
-                )
-            except Exception:
-                try:
-                    return param.AsDouble() * 304.8  # fallback conversão manual
-                except Exception:
-                    return None
-    return None
+RECOBRIMENTO_FT = 22.0 * MM_TO_FT
 
 
-def get_element_type_name(element):
-    """Retorna o nome do tipo do elemento."""
-    try:
-        tipo = element.Document.GetElement(element.GetTypeId())
-        return tipo.Name if tipo else "Sem Tipo"
-    except Exception:
-        return "Sem Tipo"
+# ── HELPERS (mesmo padrão do código-base) ────────────────────
+
+def get_name(el):
+    p = el.get_Parameter(BuiltInParameter.ALL_MODEL_TYPE_NAME)
+    return p.AsString() if p else "Id_{}".format(el.Id.IntegerValue)
 
 
-def verificar_cobrimento(element, categoria, classe_ag):
-    """
-    Verifica o cobrimento nominal do elemento.
-    Retorna (status, valor_encontrado, valor_minimo).
-    """
-    minimo = COBRIMENTO_MINIMO[classe_ag].get(categoria, None)
-    if minimo is None:
-        return STATUS_ND, None, None
-
-    cobrimento = get_param_value(element, [
-        "Cobrimento", "Cobrimento Nominal", "Cover",
-        "Structural Cover", "Cobertura"
-    ])
-
-    if cobrimento is None:
-        return STATUS_ND, None, minimo
-
-    if cobrimento >= minimo:
-        return STATUS_OK, cobrimento, minimo
-    elif cobrimento >= minimo * 0.9:
-        return STATUS_ALERTA, cobrimento, minimo
-    else:
-        return STATUS_FALHA, cobrimento, minimo
-
-
-def verificar_dimensoes_viga(element):
-    """
-    Verifica largura mínima de viga.
-    Retorna lista de (descricao, status, valor, minimo).
-    """
-    resultados = []
-    largura = get_param_value(element, ["b", "Largura", "Width", "b_w"])
-    minimo  = DIM_MIN["viga_largura"]
-
-    if largura is None:
-        resultados.append(("Largura", STATUS_ND, None, minimo))
-    elif largura >= minimo:
-        resultados.append(("Largura", STATUS_OK, largura, minimo))
-    elif largura >= minimo * 0.9:
-        resultados.append(("Largura", STATUS_ALERTA, largura, minimo))
-    else:
-        resultados.append(("Largura", STATUS_FALHA, largura, minimo))
-
-    return resultados
-
-
-def verificar_dimensoes_pilar(element):
-    """
-    Verifica menor dimensão de pilar.
-    Retorna lista de (descricao, status, valor, minimo).
-    """
-    resultados = []
-    b = get_param_value(element, ["b", "Largura", "Width"])
-    h = get_param_value(element, ["h", "Altura", "Depth"])
-
-    minimo = DIM_MIN["pilar_menor"]
-    menor  = min(v for v in [b, h] if v is not None) if (b or h) else None
-
-    if menor is None:
-        resultados.append(("Menor Dim.", STATUS_ND, None, minimo))
-    elif menor >= minimo:
-        resultados.append(("Menor Dim.", STATUS_OK, menor, minimo))
-    elif menor >= minimo * 0.9:
-        resultados.append(("Menor Dim.", STATUS_ALERTA, menor, minimo))
-    else:
-        resultados.append(("Menor Dim.", STATUS_FALHA, menor, minimo))
-
-    return resultados
-
-
-def verificar_dimensoes_laje(element):
-    """
-    Verifica espessura mínima de laje.
-    Retorna lista de (descricao, status, valor, minimo).
-    """
-    resultados = []
-    espessura = get_param_value(element, [
-        "Espessura", "Thickness", "h", "Structural Layer Thickness"
-    ])
-    minimo = DIM_MIN["laje_espessura"]
-
-    if espessura is None:
-        resultados.append(("Espessura", STATUS_ND, None, minimo))
-    elif espessura >= minimo:
-        resultados.append(("Espessura", STATUS_OK, espessura, minimo))
-    elif espessura >= minimo * 0.9:
-        resultados.append(("Espessura", STATUS_ALERTA, espessura, minimo))
-    else:
-        resultados.append(("Espessura", STATUS_FALHA, espessura, minimo))
-
-    return resultados
-
-
-# ─────────────────────────────────────────────
-#  COLETOR DE ELEMENTOS
-# ─────────────────────────────────────────────
-
-def coletar_elementos(doc):
-    """Coleta vigas, pilares e lajes estruturais do modelo."""
-    vigas   = []
-    pilares = []
-    lajes   = []
-
-    # Vigas e pilares são FramingElements (categoria OST_StructuralFraming e OST_StructuralColumns)
-    vigas_col = FilteredElementCollector(doc)\
-        .OfCategory(BuiltInCategory.OST_StructuralFraming)\
-        .WhereElementIsNotElementType()\
+def coletar_tipos_tela():
+    fat_list = list(
+        FilteredElementCollector(doc)
+        .OfClass(FabricAreaType)
         .ToElements()
-
-    pilares_col = FilteredElementCollector(doc)\
-        .OfCategory(BuiltInCategory.OST_StructuralColumns)\
-        .WhereElementIsNotElementType()\
+    )
+    fst_list = list(
+        FilteredElementCollector(doc)
+        .OfClass(FabricSheetType)
         .ToElements()
+    )
 
-    lajes_col = FilteredElementCollector(doc)\
-        .OfCategory(BuiltInCategory.OST_Floors)\
-        .WhereElementIsNotElementType()\
+    if not fat_list:
+        forms.alert("Nenhum FabricAreaType encontrado no projeto.", exitscript=True)
+    if not fst_list:
+        forms.alert("Nenhum FabricSheetType encontrado no projeto.", exitscript=True)
+
+    fat_map = {get_name(t): t for t in fat_list}
+    fst_map = {get_name(t): t for t in fst_list}
+    return fat_map, fst_map
+
+
+def resolver_sheet_type(fat_name, fst_map):
+    sheet_suffix = fat_name.replace("Tela POP ", "").strip()
+    resultado = fst_map.get(sheet_suffix)
+    if not resultado:
+        for k, v in fst_map.items():
+            if sheet_suffix in k or k in sheet_suffix:
+                resultado = v
+                break
+    return resultado
+
+
+# ── LÓGICA DE LAJE ────────────────────────────────────────────
+
+def coletar_lajes():
+    """Retorna todas as lajes (Floor) do modelo."""
+    lajes = list(
+        FilteredElementCollector(doc)
+        .OfClass(Floor)
+        .WhereElementIsNotElementType()
         .ToElements()
-
-    for el in vigas_col:
-        vigas.append(el)
-    for el in pilares_col:
-        pilares.append(el)
-    for el in lajes_col:
-        lajes.append(el)
-
-    return vigas, pilares, lajes
+    )
+    return [l for l in lajes if l.IsValidObject]
 
 
-# ─────────────────────────────────────────────
-#  MOTOR DE VERIFICAÇÃO
-# ─────────────────────────────────────────────
-
-def executar_verificacoes(doc, classe_ag):
+def obter_loops_laje(laje):
     """
-    Roda todas as verificações e retorna lista de resultados.
-    Cada item: dict com chave, tipo, nome_tipo, verificacao, status, valor, minimo
+    Extrai os CurveLoops da face superior da laje.
+    Retorna lista de CurveLoop prontos para uso no FabricArea.Create.
     """
-    resultados = []
-    vigas, pilares, lajes = coletar_elementos(doc)
+    solid = None
+    opts  = Options()
+    opts.ComputeReferences = True
+    opts.DetailLevel       = ViewDetailLevel.Fine
 
-    # ── VIGAS ──────────────────────────────
-    for el in vigas:
-        nome_tipo = get_element_type_name(el)
-        el_id     = el.Id.IntegerValue
+    geom_elem = laje.get_Geometry(opts)
+    for geom_obj in geom_elem:
+        if isinstance(geom_obj, Solid) and geom_obj.Volume > 1e-9:
+            solid = geom_obj
+            break
+        if isinstance(geom_obj, GeometryInstance):
+            for g in geom_obj.GetInstanceGeometry():
+                if isinstance(g, Solid) and g.Volume > 1e-9:
+                    solid = g
+                    break
 
-        # Cobrimento
-        st, val, mn = verificar_cobrimento(el, "viga", classe_ag)
-        resultados.append({
-            "id": el_id, "tipo": "Viga", "nome_tipo": nome_tipo,
-            "verificacao": "Cobrimento Nominal",
-            "status": st, "valor": val, "minimo": mn
-        })
+    if solid is None:
+        return None, None
 
-        # Dimensões
-        for desc, st, val, mn in verificar_dimensoes_viga(el):
-            resultados.append({
-                "id": el_id, "tipo": "Viga", "nome_tipo": nome_tipo,
-                "verificacao": desc,
-                "status": st, "valor": val, "minimo": mn
-            })
+    # Localiza a face horizontal superior (maior Z médio)
+    face_superior = None
+    z_max = -1e18
+    for face in solid.Faces:
+        normal = face.FaceNormal
+        if abs(normal.Z - 1.0) < 0.1:          # face apontando para cima
+            bbox = face.GetBoundingBox()
+            z_centro = (bbox.Min.V + bbox.Max.V) * 0.5
+            # Usa o Z real obtendo um ponto da face
+            uv_centro = UV(
+                (bbox.Min.U + bbox.Max.U) * 0.5,
+                (bbox.Min.V + bbox.Max.V) * 0.5
+            )
+            pt = face.Evaluate(uv_centro)
+            if pt.Z > z_max:
+                z_max        = pt.Z
+                face_superior = face
 
-    # ── PILARES ────────────────────────────
-    for el in pilares:
-        nome_tipo = get_element_type_name(el)
-        el_id     = el.Id.IntegerValue
+    if face_superior is None:
+        return None, None
 
-        st, val, mn = verificar_cobrimento(el, "pilar", classe_ag)
-        resultados.append({
-            "id": el_id, "tipo": "Pilar", "nome_tipo": nome_tipo,
-            "verificacao": "Cobrimento Nominal",
-            "status": st, "valor": val, "minimo": mn
-        })
+    loops = face_superior.GetEdgesAsCurveLoops()
+    if not loops or len(list(loops)) == 0:
+        return None, None
 
-        for desc, st, val, mn in verificar_dimensoes_pilar(el):
-            resultados.append({
-                "id": el_id, "tipo": "Pilar", "nome_tipo": nome_tipo,
-                "verificacao": desc,
-                "status": st, "valor": val, "minimo": mn
-            })
+    # Ponto de origem: canto mínimo da face superior
+    bbox    = face_superior.GetBoundingBox()
+    uv_orig = UV(bbox.Min.U, bbox.Min.V)
+    origem  = face_superior.Evaluate(uv_orig)
 
-    # ── LAJES ──────────────────────────────
-    for el in lajes:
-        nome_tipo = get_element_type_name(el)
-        el_id     = el.Id.IntegerValue
+    curve_loops = List[CurveLoop]()
+    for loop in face_superior.GetEdgesAsCurveLoops():
+        curve_loops.Add(loop)
 
-        st, val, mn = verificar_cobrimento(el, "laje", classe_ag)
-        resultados.append({
-            "id": el_id, "tipo": "Laje", "nome_tipo": nome_tipo,
-            "verificacao": "Cobrimento Nominal",
-            "status": st, "valor": val, "minimo": mn
-        })
-
-        for desc, st, val, mn in verificar_dimensoes_laje(el):
-            resultados.append({
-                "id": el_id, "tipo": "Laje", "nome_tipo": nome_tipo,
-                "verificacao": desc,
-                "status": st, "valor": val, "minimo": mn
-            })
-
-    return resultados
+    return curve_loops, origem
 
 
-def resumo(resultados):
-    ok     = sum(1 for r in resultados if r["status"] == STATUS_OK)
-    alerta = sum(1 for r in resultados if r["status"] == STATUS_ALERTA)
-    falha  = sum(1 for r in resultados if r["status"] == STATUS_FALHA)
-    nd     = sum(1 for r in resultados if r["status"] == STATUS_ND)
-    return ok, alerta, falha, nd
+# ── INTERFACE GRÁFICA (WinForms) ──────────────────────────────
 
+class JanelaTelaLaje(Form):
 
-# ─────────────────────────────────────────────
-#  EXPORTAÇÃO TXT
-# ─────────────────────────────────────────────
-
-def fmt_num(valor):
-    """Formata numero float para string com 1 casa decimal (compativel IronPython)."""
-    if valor is None:
-        return "-"
-    return str(round(float(valor), 1))
-
-
-def exportar_relatorio(resultados, classe_ag, caminho):
-    linhas = []
-    linhas.append("=" * 70)
-    linhas.append("  CHECKLIST NBR 6118 - VERIFICACAO DE CONFORMIDADE")
-    linhas.append("  Autor: Samuel | Versao 1.0")
-    linhas.append("  Classe de Agressividade: {}".format(classe_ag))
-    linhas.append("=" * 70)
-    linhas.append("")
-
-    ok, alerta, falha, nd = resumo(resultados)
-    linhas.append("RESUMO:")
-    linhas.append("  OK      : {}".format(ok))
-    linhas.append("  ALERTA  : {}".format(alerta))
-    linhas.append("  FALHA   : {}".format(falha))
-    linhas.append("  N/D     : {} (parametro nao localizado no modelo)".format(nd))
-    linhas.append("")
-    linhas.append("-" * 70)
-    linhas.append("{:<10} {:<12} {:<30} {:<22} {:<8} {:<10} {:<10}".format(
-        "ID", "Tipo", "Nome do Tipo", "Verificacao", "Status", "Valor(mm)", "Min(mm)"
-    ))
-    linhas.append("-" * 70)
-
-    for r in resultados:
-        linhas.append("{:<10} {:<12} {:<30} {:<22} {:<8} {:<10} {:<10}".format(
-            str(r["id"]),
-            r["tipo"],
-            r["nome_tipo"][:28],
-            r["verificacao"][:20],
-            r["status"],
-            fmt_num(r["valor"]),
-            fmt_num(r["minimo"])
-        ))
-
-    linhas.append("=" * 70)
-
-    with open(caminho, "w", encoding="utf-8") as f:
-        f.write("\n".join(linhas))
-
-
-# ─────────────────────────────────────────────
-#  INTERFACE GRÁFICA
-# ─────────────────────────────────────────────
-
-class ChecklistForm(Form):
-
-    def __init__(self, doc):
-        self.doc = doc
-        self.resultados = []
-        self._build_ui()
-
-    def _build_ui(self):
-        self.Text            = "Checklist NBR 6118 - Concreto"
-        self.Size            = Size(860, 620)
+    def __init__(self, tipos_disponiveis):
+        Form.__init__(self)
+        self.Text            = "Tela de Laje Automatica"
+        self.Size            = Size(360, 230)
         self.FormBorderStyle = FormBorderStyle.FixedDialog
         self.StartPosition   = FormStartPosition.CenterScreen
         self.MaximizeBox     = False
         self.MinimizeBox     = False
 
-        # ── Classe de agressividade ─────────
-        lbl_classe = Label()
-        lbl_classe.Text     = "Classe de Agressividade Ambiental (NBR 6118 Tab. 6.1):"
-        lbl_classe.Location = Point(12, 14)
-        lbl_classe.Size     = Size(420, 20)
-        self.Controls.Add(lbl_classe)
+        self.tipo_selecionado  = None
+        self.transpasse_min_cm = None
+        self.transpasse_max_cm = None
 
-        self.cmb_classe = ComboBox()
-        self.cmb_classe.Location      = Point(12, 36)
-        self.cmb_classe.Size          = Size(500, 24)
-        self.cmb_classe.DropDownStyle = ComboBoxStyle.DropDownList
-        for classe in COBRIMENTO_MINIMO.keys():
-            self.cmb_classe.Items.Add(classe)
-        self.cmb_classe.SelectedIndex = 1   # default: Classe II
-        self.Controls.Add(self.cmb_classe)
+        padding_x    = 20
+        largura_ctrl = 300
+        y            = 20
 
-        # ── Botão rodar ─────────────────────
-        self.btn_rodar = Button()
-        self.btn_rodar.Text     = "Executar Verificacao"
-        self.btn_rodar.Location = Point(530, 34)
-        self.btn_rodar.Size     = Size(150, 28)
-        self.btn_rodar.Click   += self._on_rodar
-        self.Controls.Add(self.btn_rodar)
+        # Tipo de Tela
+        lbl_tipo = Label()
+        lbl_tipo.Text     = "Tipo de Tela:"
+        lbl_tipo.Location = Point(padding_x, y)
+        lbl_tipo.Size     = Size(largura_ctrl, 20)
+        self.Controls.Add(lbl_tipo)
 
-        # ── Botão exportar ──────────────────
-        self.btn_exportar = Button()
-        self.btn_exportar.Text     = "Exportar Relatorio"
-        self.btn_exportar.Location = Point(695, 34)
-        self.btn_exportar.Size     = Size(140, 28)
-        self.btn_exportar.Enabled  = False
-        self.btn_exportar.Click   += self._on_exportar
-        self.Controls.Add(self.btn_exportar)
+        y += 22
+        self.cmb_tipo = ComboBox()
+        self.cmb_tipo.Location      = Point(padding_x, y)
+        self.cmb_tipo.Size          = Size(largura_ctrl, 24)
+        self.cmb_tipo.DropDownStyle = ComboBoxStyle.DropDownList
+        for nome in sorted(tipos_disponiveis):
+            self.cmb_tipo.Items.Add(nome)
+        if self.cmb_tipo.Items.Count > 0:
+            self.cmb_tipo.SelectedIndex = 0
+        self.Controls.Add(self.cmb_tipo)
 
-        # ── Resumo ──────────────────────────
-        self.lbl_resumo = Label()
-        self.lbl_resumo.Text     = "Aguardando execucao..."
-        self.lbl_resumo.Location = Point(12, 72)
-        self.lbl_resumo.Size     = Size(820, 20)
-        self.lbl_resumo.Font     = Font("Segoe UI", 9, FontStyle.Bold)
-        self.Controls.Add(self.lbl_resumo)
+        y += 36
 
-        # ── Resultado em texto ───────────────
-        self.txt_resultado = RichTextBox()
-        self.txt_resultado.Location   = Point(12, 98)
-        self.txt_resultado.Size       = Size(820, 460)
-        self.txt_resultado.ReadOnly   = True
-        self.txt_resultado.ScrollBars = RichTextBoxScrollBars.Both
-        self.txt_resultado.Font       = Font("Courier New", 8)
-        self.txt_resultado.BackColor  = Color.FromArgb(30, 30, 30)
-        self.txt_resultado.ForeColor  = Color.White
-        self.txt_resultado.WordWrap   = False
-        self.Controls.Add(self.txt_resultado)
+        # Transpasse Mínimo
+        lbl_min = Label()
+        lbl_min.Text     = "Transpasse Minimo (cm):"
+        lbl_min.Location = Point(padding_x, y)
+        lbl_min.Size     = Size(largura_ctrl, 20)
+        self.Controls.Add(lbl_min)
 
-    # ── EVENTOS ─────────────────────────────────────────────────────────
+        y += 22
+        self.txt_min = TextBox()
+        self.txt_min.Location = Point(padding_x, y)
+        self.txt_min.Size     = Size(largura_ctrl, 24)
+        self.txt_min.Text     = "20"
+        self.Controls.Add(self.txt_min)
 
-    def _on_rodar(self, sender, args):
-        classe_ag = self.cmb_classe.SelectedItem
-        if not classe_ag:
+        y += 36
+
+        # Transpasse Máximo
+        lbl_max = Label()
+        lbl_max.Text     = "Transpasse Maximo (cm):"
+        lbl_max.Location = Point(padding_x, y)
+        lbl_max.Size     = Size(largura_ctrl, 20)
+        self.Controls.Add(lbl_max)
+
+        y += 22
+        self.txt_max = TextBox()
+        self.txt_max.Location = Point(padding_x, y)
+        self.txt_max.Size     = Size(largura_ctrl, 24)
+        self.txt_max.Text     = "50"
+        self.Controls.Add(self.txt_max)
+
+        y += 36
+                                        
+        # Botões
+        btn_ok = Button()
+        btn_ok.Text     = "OK"
+        btn_ok.Size     = Size(90, 30)
+        btn_ok.Location = Point(padding_x, y)
+        btn_ok.Click   += self.ao_clicar_ok
+        self.Controls.Add(btn_ok)
+
+        btn_cancelar = Button()
+        btn_cancelar.Text     = "Cancelar"
+        btn_cancelar.Size     = Size(90, 30)
+        btn_cancelar.Location = Point(padding_x + 100, y)
+        btn_cancelar.Click   += self.ao_clicar_cancelar
+        self.Controls.Add(btn_cancelar)
+
+        self.AcceptButton = btn_ok
+        self.CancelButton = btn_cancelar
+
+    def ao_clicar_ok(self, sender, e):
+        if self.cmb_tipo.SelectedIndex < 0:
             MessageBox.Show(
-                "Selecione a classe de agressividade antes de continuar.",
-                "Atencao",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning
+                "Selecione um tipo de Tela.",
+                "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning
             )
             return
 
-        self.btn_rodar.Enabled    = False
-        self.btn_exportar.Enabled = False
-        self.txt_resultado.Clear()
-        self.lbl_resumo.Text = "Executando verificacoes..."
-        Application.DoEvents()
+        try:
+            t_min = float(self.txt_min.Text.replace(",", "."))
+            if t_min < 0:
+                raise ValueError()
+        except Exception:
+            MessageBox.Show(
+                "Informe um transpasse minimo valido (numero >= 0 em cm).",
+                "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning
+            )
+            return
 
         try:
-            self.resultados = executar_verificacoes(self.doc, classe_ag)
-            self._preencher_resultado(classe_ag)
-            self.btn_exportar.Enabled = True
-        except Exception as ex:
+            t_max = float(self.txt_max.Text.replace(",", "."))
+            if t_max < t_min:
+                raise ValueError()
+        except Exception:
             MessageBox.Show(
-                "Erro durante a verificacao:\n{}".format(str(ex)),
-                "Erro",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error
+                "Informe um transpasse maximo valido (>= transpasse minimo, em cm).",
+                "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning
             )
-        finally:
-            self.btn_rodar.Enabled = True
+            return
 
-    def _preencher_resultado(self, classe_ag):
-        ok, alerta, falha, nd = resumo(self.resultados)
-        total = len(self.resultados)
+        self.tipo_selecionado  = self.cmb_tipo.SelectedItem
+        self.transpasse_min_cm = t_min
+        self.transpasse_max_cm = t_max
+        self.DialogResult      = DialogResult.OK
+        self.Close()
 
-        self.lbl_resumo.Text = (
-            "Total: {}  |  OK: {}  |  ALERTA: {}  |  FALHA: {}  |  N/D: {}"
-            .format(total, ok, alerta, falha, nd)
-        )
+    def ao_clicar_cancelar(self, sender, e):
+        self.DialogResult = DialogResult.Cancel
+        self.Close()
 
-        linhas = []
-        linhas.append("=" * 95)
-        linhas.append("  CHECKLIST NBR 6118 | Classe: {}".format(classe_ag))
-        linhas.append("=" * 95)
-        linhas.append("{:<10} {:<10} {:<30} {:<22} {:<8} {:<10} {:<8}".format(
-            "ID", "Tipo", "Nome do Tipo", "Verificacao", "Status", "Val(mm)", "Min(mm)"
-        ))
-        linhas.append("-" * 95)
 
-        for r in self.resultados:
-            linha = "{:<10} {:<10} {:<30} {:<22} {:<8} {:<10} {:<8}".format(
-                str(r["id"]),
-                r["tipo"],
-                r["nome_tipo"][:28],
-                r["verificacao"][:20],
-                r["status"],
-                fmt_num(r["valor"]),
-                fmt_num(r["minimo"])
+# ── FLUXO PRINCIPAL ───────────────────────────────────────────
+
+fat_map, fst_map = coletar_tipos_tela()
+
+janela = JanelaTelaLaje(sorted(fat_map.keys()))
+resultado_janela = janela.ShowDialog()
+
+if resultado_janela != DialogResult.OK:
+    script.exit()
+
+fat_name           = janela.tipo_selecionado
+transpasse_min_ft  = janela.transpasse_min_cm * CM_TO_FT
+transpasse_max_ft  = janela.transpasse_max_cm * CM_TO_FT
+
+selected_fat        = fat_map[fat_name]
+fabric_area_type_id = selected_fat.Id
+
+selected_fst = resolver_sheet_type(fat_name, fst_map)
+if not selected_fst:
+    forms.alert(
+        u"Nao foi possivel encontrar a folha automaticamente para '{}'.".format(fat_name),
+        exitscript=True
+    )
+fabric_sheet_type_id = selected_fst.Id
+
+# Coleta todas as lajes automaticamente — sem seleção manual
+lajes = coletar_lajes()
+
+if not lajes:
+    forms.alert("Nenhuma laje encontrada no modelo.", exitscript=True)
+
+criados       = 0
+ignorados     = 0
+erros         = []
+
+with revit.Transaction("Tela de Laje Automatica"):
+    for laje in lajes:
+        try:
+            curve_loops, origem = obter_loops_laje(laje)
+
+            if curve_loops is None or curve_loops.Count == 0:
+                ignorados += 1
+                erros.append(
+                    u"Laje {}: nao foi possivel extrair geometria.".format(
+                        laje.Id.IntegerValue
+                    )
+                )
+                continue
+
+            # Direção horizontal X para a malha da tela de laje
+            direcao_horizontal = XYZ(1.0, 0.0, 0.0)
+
+            fa = FabricArea.Create(
+                doc,
+                laje,
+                curve_loops,
+                direcao_horizontal,
+                origem,
+                fabric_area_type_id,
+                fabric_sheet_type_id
             )
-            linhas.append(linha)
 
-        linhas.append("=" * 95)
-        self.txt_resultado.Text = "\n".join(linhas)
+            # Aplica transpasse mínimo se o parâmetro existir
+            p_min = fa.LookupParameter(u"Transpasse minimo")
+            if p_min and not p_min.IsReadOnly:
+                p_min.Set(transpasse_min_ft)
 
-        # Colorização simples: pinta linhas de falha em vermelho
-        # (RichTextBox IronPython: colorir por substring)
-        self._colorir_linhas()
+            # Aplica transpasse máximo se o parâmetro existir
+            p_max = fa.LookupParameter(u"Transpasse maximo")
+            if p_max and not p_max.IsReadOnly:
+                p_max.Set(transpasse_max_ft)
 
-    def _colorir_linhas(self):
-        """Colore linhas do RichTextBox de acordo com status."""
-        rtb   = self.txt_resultado
-        texto = rtb.Text
-        linhas = texto.split("\n")
-        rtb.Clear()
+            # Recobrimento padrão (mesmo padrão do código-base: 22 mm)
+            p_recob = fa.LookupParameter(u"Deslocamento adicional da recobrimento")
+            if p_recob and not p_recob.IsReadOnly:
+                p_recob.Set(RECOBRIMENTO_FT)
 
-        for linha in linhas:
-            start = len(rtb.Text)
-            rtb.AppendText(linha + "\n")
-            end   = len(rtb.Text)
+            criados += 1
 
-            if STATUS_FALHA in linha:
-                rtb.Select(start, end - start)
-                rtb.SelectionColor = Color.FromArgb(255, 80, 80)
-            elif STATUS_ALERTA in linha:
-                rtb.Select(start, end - start)
-                rtb.SelectionColor = Color.FromArgb(255, 200, 50)
-            elif STATUS_OK in linha:
-                rtb.Select(start, end - start)
-                rtb.SelectionColor = Color.FromArgb(100, 220, 100)
-            elif STATUS_ND in linha:
-                rtb.Select(start, end - start)
-                rtb.SelectionColor = Color.FromArgb(160, 160, 160)
-            else:
-                rtb.Select(start, end - start)
-                rtb.SelectionColor = Color.White
+        except Exception as ex:
+            ignorados += 1
+            erros.append(
+                u"Laje {}: {}".format(laje.Id.IntegerValue, str(ex))
+            )
 
-        rtb.SelectionStart = 0
+# ── Resumo ────────────────────────────────────────────────────
+msg = (
+    u"Tela de Laje aplicada!\n\n"
+    u"Tipo            : {}\n"
+    u"Folha           : {}\n"
+    u"Transpasse Min  : {} cm\n"
+    u"Transpasse Max  : {} cm\n"
+    u"Lajes no modelo : {}\n"
+    u"Telas criadas   : {}\n"
+    u"Ignoradas       : {}\n"
+    u"Recobrimento    : 22 mm"
+).format(
+    fat_name,
+    get_name(selected_fst),
+    int(janela.transpasse_min_cm),
+    int(janela.transpasse_max_cm),
+    len(lajes),
+    criados,
+    ignorados
+)
 
-    def _on_exportar(self, sender, args):
-        dlg = SaveFileDialog()
-        dlg.Title      = "Salvar Relatorio NBR 6118"
-        dlg.Filter     = "Arquivo de texto (*.txt)|*.txt"
-        dlg.FileName   = "checklist_nbr6118.txt"
-
-        if dlg.ShowDialog() == DialogResult.OK:
-            try:
-                classe_ag = self.cmb_classe.SelectedItem
-                exportar_relatorio(self.resultados, classe_ag, dlg.FileName)
-                MessageBox.Show(
-                    "Relatorio exportado com sucesso!\n{}".format(dlg.FileName),
-                    "Sucesso",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information
-                )
-            except Exception as ex:
-                MessageBox.Show(
-                    "Erro ao exportar:\n{}".format(str(ex)),
-                    "Erro",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error
-                )
-
-
-# ─────────────────────────────────────────────
-#  ENTRY POINT
-# ─────────────────────────────────────────────
-
-if __name__ == "__main__":
-    doc  = revit.doc
-    form = ChecklistForm(doc)
-    form.ShowDialog()
+ 
+forms.alert(msg, warn_icon=bool(erros), title="Tela de Laje Automatica")
