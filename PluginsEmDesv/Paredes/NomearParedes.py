@@ -698,29 +698,24 @@ def formatar_marca(numero, nome_nivel=""):
 
 
 def definir_parametro_mark(elemento, valor):
-    """
-    Define o valor do parametro Mark (Marca) de um elemento Revit.
-
-    Args:
-        elemento: Elemento Wall do Revit.
-        valor (str): Valor a ser atribuido.
-
-    Returns:
-        bool: True se bem-sucedido, False caso contrario.
-    """
     try:
-        param = elemento.get_Parameter(BuiltInParameter.ALL_MODEL_MARK)
+        # --- MARCA ---
+        param_mark = elemento.get_Parameter(BuiltInParameter.ALL_MODEL_MARK)
+        if param_mark is None:
+            param_mark = elemento.LookupParameter("Marca")
+        if param_mark is None:
+            param_mark = elemento.LookupParameter("Mark")
 
-        # Fallback por nome (pt / en)
-        if param is None:
-            param = elemento.LookupParameter("Marca")
-        if param is None:
-            param = elemento.LookupParameter("Mark")
-
-        if param is None or param.IsReadOnly:
+        if param_mark is None or param_mark.IsReadOnly:
             return False
 
-        param.Set(valor)
+        param_mark.Set(valor)
+
+        # --- CHAVE ---
+        param_key = elemento.LookupParameter("Chave")
+        if param_key is not None and not param_key.IsReadOnly:
+            param_key.Set(valor)
+
         return True
 
     except Exception:
