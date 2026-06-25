@@ -2,6 +2,7 @@
 __title__   = "Volume de Aco"
 __author__  = "Samuel"
 __version__ = "Versao 1.0"
+__doc__     = "Calcula peso e comprimento de aco/armadura por categoria, diametro, fase e nivel."
 
 import clr
 clr.AddReference('RevitAPI')
@@ -25,7 +26,28 @@ from pyrevit import forms, revit, script
 doc = revit.doc
 
 # ══════════════════════════════════════════════════════════════
-#  CONSTANTES DE CONVERSÃO
+#  HELPER: getattr seguro para BIP e BIC
+# ══════════════════════════════════════════════════════════════
+
+def safe_bip(nome):
+    """Retorna o BuiltInParameter pelo nome, ou None se não existir."""
+    return getattr(BuiltInParameter, nome, None)
+
+def safe_bic(nome):
+    """Retorna o BuiltInCategory pelo nome, ou None se não existir."""
+    return getattr(BuiltInCategory, nome, None)
+
+def bips(*nomes):
+    """Retorna lista de BIPs existentes a partir de nomes string."""
+    result = []
+    for n in nomes:
+        b = safe_bip(n)
+        if b is not None:
+            result.append(b)
+    return result
+
+# ══════════════════════════════════════════════════════════════
+#  CONVERSÕES
 # ══════════════════════════════════════════════════════════════
 
 def ft_to_m(v):
@@ -41,7 +63,6 @@ def ft_to_m2(v):
         return v * 0.092903
 
 def ft_to_kg(v):
-    """Converte lb (unidade interna Revit para peso) para kg."""
     try:
         return UnitUtils.ConvertFromInternalUnits(v, UnitTypeId.Kilograms)
     except Exception:
@@ -66,8 +87,15 @@ def get_fase(el):
         pass
     return "Sem Fase"
 
+# BIPs de nível — resolvidos uma vez no início
+_BIPS_NIVEL = bips(
+    "REBAR_ELEM_HOST_LEVEL",
+    "FABRIC_AREA_LEVEL",
+    "INSTANCE_REFERENCE_LEVEL_PARAM",
+    "SCHEDULE_LEVEL_PARAM",
+)
+
 def get_nivel(el):
-    """Tenta LevelId, depois parâmetros comuns de nível."""
     try:
         lid = el.LevelId
         if lid and lid != ElementId.InvalidElementId:
@@ -76,12 +104,7 @@ def get_nivel(el):
                 return lv.Name
     except Exception:
         pass
-    for bip in [
-        BuiltInParameter.REBAR_ELEM_HOST_LEVEL,
-        BuiltInParameter.FABRIC_AREA_LEVEL,
-        BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM,
-        BuiltInParameter.SCHEDULE_LEVEL_PARAM,
-    ]:
+    for bip in _BIPS_NIVEL:
         try:
             p = el.get_Parameter(bip)
             if p:
@@ -92,10 +115,9 @@ def get_nivel(el):
             pass
     return "-"
 
-def get_param_double(el, bips=None, names=None):
-    """Tenta ler um parâmetro Double por lista de BIP e/ou nomes."""
-    if bips:
-        for bip in bips:
+def get_param_double(el, bip_list=None, names=None):
+    if bip_list:
+        for bip in bip_list:
             try:
                 p = el.get_Parameter(bip)
                 if p and p.HasValue and p.StorageType == StorageType.Double:
@@ -119,33 +141,74 @@ def get_type_name(el):
     except Exception:
         return "Sem Tipo"
 
-def get_diametro_mm(el):
-    """Tenta ler diâmetro nominal em mm (Rebar e RebarInSystem)."""
-    raw = get_param_double(
-        el,
-        bips=[BuiltInParameter.REBAR_BAR_DIAMETER],
-        names=["Diameter", "Bar Diameter", "Diametro", "Nominal Diameter"]
-    )
-    if raw is not None:
-        return round(ft_to_m(raw) * 1000, 1)
-    return None
+def get_subtipo(el):
+    """
+    Lê o nome real da família do elemento diretamente das propriedades de tipo,
+    igual ao que aparece no painel Propriedades do Revit.
+    """
+    try:
+        tipo = doc.GetElement(el.GetTypeId())
+        if tipo:
+            # "Família do sistema: Barra do vergalhão" — BIP padrão
+            fp = tipo.get_Parameter(BuiltInParameter.ALL_MODEL_FAMILY_NAME)
+            if fp and fp.AsString():
+                familia = fp.AsString()
+                # Remove prefixo "Família do sistema: " se existir
+                for prefixo in ["Família do sistema: ", "System Family: ", "Family: "]:
+                    if familia.startswith(prefixo):
+                        familia = familia[len(prefixo):]
+                        break
+                return familia
+    except Exception:
+        pass
+
+    # fallback: tipo .NET
+    try:
+        net = el.GetType().Name
+        if net == "RebarInSystem":
+            return "Armadura em Sistema"
+    except Exception:
+        pass
+
+    return "Armadura (Rebar)"
+# ══════════════════════════════════════════════════════════════
+#  BIPs DE COLETA — resolvidos uma vez
+# ══════════════════════════════════════════════════════════════
+
+_BIP_PESO_REBAR = bips("REBAR_ELEM_TOTAL_WEIGHT", "REBAR_TOTAL_WEIGHT")
+_BIP_COMP_REBAR = bips("REBAR_ELEM_LENGTH", "CURVE_ELEM_LENGTH")
+_BIP_QTD_REBAR  = bips("REBAR_ELEM_QUANTITY_OF_BARS")
+_BIP_DIAM_REBAR = bips("REBAR_BAR_DIAMETER")
+_BIP_PESO_MALHA = bips("FABRIC_AREA_TOTAL_WEIGHT", "FABRIC_SHEET_WEIGHT")
+_BIP_AREA_MALHA = bips("FABRIC_AREA_AREA", "HOST_AREA_COMPUTED")
 
 # ══════════════════════════════════════════════════════════════
-#  COLETA POR CATEGORIA
+#  CATEGORIAS — resolvidas em tempo de execução
 # ══════════════════════════════════════════════════════════════
 
-CATEGORIAS_REBAR = [
-    ("Armadura (Rebar)",          BuiltInCategory.OST_Rebar),
-    ("Armadura em Sistema",       BuiltInCategory.OST_RebarInSystem),
-    ("Armadura de Area",          BuiltInCategory.OST_AreaReinforcement),
-    ("Armadura de Caminho",       BuiltInCategory.OST_PathReinforcement),
-    ("Armadura Estrutural",       BuiltInCategory.OST_StructuralStiffener),
-]
+def _build_cats(pares):
+    result = []
+    for label, bic_name in pares:
+        bic = safe_bic(bic_name)
+        if bic is not None:
+            result.append((label, bic))
+    return result
 
-CATEGORIAS_MALHA = [
-    ("Tela Soldada (Area)",       BuiltInCategory.OST_FabricAreas),
-    ("Tela Soldada (Folha)",      BuiltInCategory.OST_FabricReinforcement),
-]
+CATEGORIAS_REBAR = _build_cats([
+    ("Armadura (Rebar)",    "OST_Rebar"),
+    ("Armadura de Area",    "OST_AreaReinforcement"),
+    ("Armadura de Caminho", "OST_PathReinforcement"),
+    ("Armadura Estrutural", "OST_StructuralStiffener"),
+])
+
+CATEGORIAS_MALHA = _build_cats([
+    ("Tela Soldada (Area)",  "OST_FabricAreas"),
+    ("Tela Soldada (Folha)", "OST_FabricReinforcement"),
+])
+
+# ══════════════════════════════════════════════════════════════
+#  COLETA
+# ══════════════════════════════════════════════════════════════
 
 def coletar_rebar(cat_nome, cat_bic):
     registros = []
@@ -160,51 +223,100 @@ def coletar_rebar(cat_nome, cat_bic):
         return registros
 
     for el in elementos:
-        # ── Peso ──────────────────────────────────────────────
-        peso_raw = get_param_double(
-            el,
-            bips=[
-                BuiltInParameter.REBAR_ELEM_TOTAL_WEIGHT,
-                BuiltInParameter.REBAR_TOTAL_WEIGHT,
-            ],
-            names=["Total Weight", "Peso Total", "Weight", "Peso"]
-        )
-        peso_kg = ft_to_kg(peso_raw) if peso_raw is not None else None
+        nome_cat = get_subtipo(el) if cat_bic == safe_bic("OST_Rebar") else cat_nome
 
-        # ── Comprimento ───────────────────────────────────────
+        # ── Comprimento total da barra (instância) ────────────
         comp_raw = get_param_double(
             el,
-            bips=[
-                BuiltInParameter.REBAR_ELEM_LENGTH,
-                BuiltInParameter.CURVE_ELEM_LENGTH,
-            ],
-            names=["Length", "Total Length", "Comprimento", "Comprimento Total"]
+            bip_list=_BIP_COMP_REBAR,
+            names=[
+                "Comprimento total da barra",
+                "Total Bar Length",
+                "Comprimento da barra",
+                "Bar Length",
+                "Length",
+                "Comprimento",
+            ]
         )
         comp_m = ft_to_m(comp_raw) if comp_raw is not None else None
 
-        # ── Quantidade de barras ───────────────────────────────
+        # ── Quantidade de barras ──────────────────────────────
         qtd_raw = get_param_double(
             el,
-            bips=[BuiltInParameter.REBAR_ELEM_QUANTITY_OF_BARS],
-            names=["Quantity of Bars", "Quantidade de Barras", "Number of Bars"]
+            bip_list=_BIP_QTD_REBAR,
+            names=["Quantity of Bars", "Quantidade de Barras", "Number of Bars", "Quantidade"]
         )
         qtd = int(qtd_raw) if qtd_raw is not None else 1
 
-        # Ignora elementos sem dados úteis
+        # ── Peso barra (kg/m) — parâmetro de TIPO ────────────
+        peso_por_metro = None
+        try:
+            tipo = doc.GetElement(el.GetTypeId())
+            if tipo:
+                p = tipo.LookupParameter("Peso barra")
+                if p and p.HasValue and p.StorageType == StorageType.Double:
+                    peso_por_metro = p.AsDouble()  # já em kg/m no Revit BR
+                if peso_por_metro is None:
+                    # fallback nomes alternativos
+                    for nome_p in ["Bar Weight", "Weight per unit length", "Peso por metro"]:
+                        p = tipo.LookupParameter(nome_p)
+                        if p and p.HasValue and p.StorageType == StorageType.Double:
+                            # converte lb/ft → kg/m se necessário
+                            raw = p.AsDouble()
+                            # heurística: se valor < 1 provavelmente está em lb/ft
+                            if raw < 1.0:
+                                raw = raw * 1.48816  # lb/ft → kg/m
+                            peso_por_metro = raw
+                            break
+        except Exception:
+            pass
+
+        # ── Tenta peso direto na instância como fallback ──────
+        peso_kg = None
+        if peso_por_metro is not None and comp_m is not None:
+            peso_kg = peso_por_metro * comp_m
+        else:
+            peso_raw = get_param_double(
+                el,
+                bip_list=_BIP_PESO_REBAR,
+                names=["Total Weight", "Peso Total", "Weight", "Peso"]
+            )
+            if peso_raw is not None:
+                # tenta converter de lb para kg
+                peso_kg = ft_to_kg(peso_raw)
+
         if peso_kg is None and comp_m is None:
             continue
 
-        diam_mm = get_diametro_mm(el)
+        # ── Diâmetro ──────────────────────────────────────────
+        diam_raw = get_param_double(
+            el,
+            bip_list=_BIP_DIAM_REBAR,
+            names=["Diametro da barra", "Bar Diameter", "Diameter", "Diametro", "Nominal Diameter"]
+        )
+        # fallback: lê do tipo
+        if diam_raw is None:
+            try:
+                tipo = doc.GetElement(el.GetTypeId())
+                if tipo:
+                    p = tipo.LookupParameter("Diametro da barra")
+                    if p and p.HasValue:
+                        diam_raw = p.AsDouble()
+            except Exception:
+                pass
+
+        diam_mm  = round(ft_to_m(diam_raw) * 1000, 1) if diam_raw is not None else None
         diam_str = "phi{}".format(int(diam_mm)) if diam_mm else "Sem diam."
 
         registros.append({
-            "categoria": cat_nome,
+            "categoria": nome_cat,
             "tipo":      get_type_name(el),
             "nivel":     get_nivel(el),
             "fase":      get_fase(el),
             "diametro":  diam_str,
             "peso_kg":   peso_kg or 0.0,
             "comp_m":    comp_m  or 0.0,
+            "area_m2":   0.0,
             "qtd":       qtd,
             "id":        el.Id.IntegerValue,
             "origem":    "rebar",
@@ -226,27 +338,13 @@ def coletar_malha(cat_nome, cat_bic):
         return registros
 
     for el in elementos:
-        # ── Peso (FabricArea e FabricSheet guardam em lb) ─────
-        peso_raw = get_param_double(
-            el,
-            bips=[
-                BuiltInParameter.FABRIC_AREA_TOTAL_WEIGHT,
-                BuiltInParameter.FABRIC_SHEET_WEIGHT,
-            ],
-            names=["Total Weight", "Peso Total", "Weight"]
-        )
-        peso_kg = ft_to_kg(peso_raw) if peso_raw is not None else None
+        peso_raw = get_param_double(el, _BIP_PESO_MALHA,
+                                    ["Total Weight", "Peso Total", "Weight"])
+        peso_kg  = ft_to_kg(peso_raw) if peso_raw is not None else None
 
-        # ── Área (m²) ─────────────────────────────────────────
-        area_raw = get_param_double(
-            el,
-            bips=[
-                BuiltInParameter.FABRIC_AREA_AREA,
-                BuiltInParameter.HOST_AREA_COMPUTED,
-            ],
-            names=["Area", "Fabric Area"]
-        )
-        area_m2 = ft_to_m2(area_raw) if area_raw is not None else None
+        area_raw = get_param_double(el, _BIP_AREA_MALHA,
+                                    ["Area", "Fabric Area"])
+        area_m2  = ft_to_m2(area_raw) if area_raw is not None else None
 
         if peso_kg is None and area_m2 is None:
             continue
@@ -258,7 +356,7 @@ def coletar_malha(cat_nome, cat_bic):
             "fase":      get_fase(el),
             "diametro":  "Malha",
             "peso_kg":   peso_kg or 0.0,
-            "comp_m":    0.0,           # malha não tem comprimento de barra
+            "comp_m":    0.0,
             "area_m2":   area_m2 or 0.0,
             "qtd":       1,
             "id":        el.Id.IntegerValue,
@@ -281,7 +379,6 @@ def coletar_todos():
 # ══════════════════════════════════════════════════════════════
 
 def agrupar(registros, chave):
-    """Agrupa por chave, somando peso e comprimento."""
     grupos = {}
     for r in registros:
         k = r[chave]
@@ -290,7 +387,7 @@ def agrupar(registros, chave):
         grupos[k]["peso_kg"] += r.get("peso_kg", 0.0)
         grupos[k]["comp_m"]  += r.get("comp_m",  0.0)
         grupos[k]["area_m2"] += r.get("area_m2", 0.0)
-        grupos[k]["qtd"]     += r.get("qtd",     1)
+        grupos[k]["qtd"]     += r.get("qtd", 1)
     return sorted(grupos.items(), key=lambda x: x[0])
 
 
@@ -314,7 +411,6 @@ def montar_relatorio(registros):
     total_peso = sum(r.get("peso_kg", 0.0) for r in registros)
     total_comp = sum(r.get("comp_m",  0.0) for r in registros)
     total_area = sum(r.get("area_m2", 0.0) for r in registros)
-    total_qtd  = sum(r.get("qtd",     1)   for r in registros)
 
     L.append("=" * 90)
     L.append("  VOLUME / PESO DE ACO E ARMADURA - RELATORIO GERAL")
@@ -326,7 +422,6 @@ def montar_relatorio(registros):
     L.append("=" * 90)
     L.append("")
 
-    # ── Por Categoria ──────────────────────────────────────────
     L.append("[ POR CATEGORIA ]")
     L.append("-" * 60)
     L.append("{:<28} {:>12} {:>14} {:>10}".format(
@@ -341,7 +436,6 @@ def montar_relatorio(registros):
         ))
     L.append("")
 
-    # ── Por Diâmetro ───────────────────────────────────────────
     L.append("[ POR DIAMETRO / TIPO DE BARRA ]")
     L.append("-" * 60)
     L.append("{:<16} {:>12} {:>14} {:>8}".format(
@@ -356,7 +450,6 @@ def montar_relatorio(registros):
         ))
     L.append("")
 
-    # ── Por Fase ───────────────────────────────────────────────
     L.append("[ POR FASE / ETAPA DE CONCRETAGEM ]")
     L.append("-" * 60)
     L.append("{:<30} {:>12} {:>14}".format("Fase", "Peso (kg)", "Comp. (m)"))
@@ -369,7 +462,6 @@ def montar_relatorio(registros):
         ))
     L.append("")
 
-    # ── Por Nível ──────────────────────────────────────────────
     L.append("[ POR NIVEL ]")
     L.append("-" * 60)
     L.append("{:<30} {:>12} {:>14}".format("Nivel", "Peso (kg)", "Comp. (m)"))
@@ -382,10 +474,8 @@ def montar_relatorio(registros):
         ))
     L.append("")
 
-    # ── Tabela Cruzada Categoria x Fase ───────────────────────
     L.append("[ CATEGORIA x FASE  (Peso em kg) ]")
     L.append("-" * 90)
-
     fases = sorted(set(r["fase"]      for r in registros))
     cats  = sorted(set(r["categoria"] for r in registros))
     grp   = agrupar_cat_fase(registros)
@@ -416,7 +506,6 @@ def montar_relatorio(registros):
     L.append(linha_tot)
     L.append("=" * 90)
 
-    # ── Detalhe por Elemento ───────────────────────────────────
     L.append("")
     L.append("[ DETALHE POR ELEMENTO ]")
     L.append("-" * 90)
@@ -519,15 +608,15 @@ class AcoForm(Form):
             if not self.registros:
                 MessageBox.Show(
                     "Nenhum elemento de aco/armadura encontrado no modelo.\n"
-                    "Verifique se existem Rebar, RebarInSystem ou FabricArea no projeto.",
+                    "Verifique se existem Rebar ou FabricArea no projeto.",
                     "Atencao",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning
                 )
                 return
 
-            self.relatorio      = montar_relatorio(self.registros)
-            self.txt.Text       = self.relatorio
+            self.relatorio       = montar_relatorio(self.registros)
+            self.txt.Text        = self.relatorio
             self.btn_exp.Enabled = True
 
             total_peso = sum(r.get("peso_kg", 0.0) for r in self.registros)
