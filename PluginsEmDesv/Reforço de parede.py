@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-__title__ = "Reforço de Parede"
+__title__ = "Reforço de Aberturas"
 __author__ = "Samuel"
 __version__ = "Versão 6.9 - vertical limitado pela base da parede em portas"
+__doc__ = "Adiciona reforço em janelas e portas"
 
 import clr
 import math
