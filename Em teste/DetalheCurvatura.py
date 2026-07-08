@@ -1,13 +1,10 @@
 # -*- coding: utf-8 -*-
 __title__ = "Detalhe de Curvatura"
 __author__ = "Samuel"
-__version__ = "Versao 1.2 - posicionamento por lado da parede/abertura"
-__doc__ = ("Cria automaticamente os Bending Details (Detalhe de Curvatura) para os "
-           "rebars de reforco de aberturas visiveis na view ativa, posicionando cada "
-           "detalhe no lado correspondente da parede: barras de cima ficam acima da "
-           "parede, barras de baixo ficam abaixo, e barras de esquerda/direita ficam "
-           "para os respectivos lados. A rotacao do detalhe tambem e alinhada com a "
-           "direcao da barra.")
+__version__ = "Versao 1.3 - somente barra horizontal de baixo (teste de logica)"
+__doc__ = ("Cria o Bending Detail apenas para a barra horizontal de BAIXO de cada "
+           "abertura visivel na view ativa (1 detalhe por abertura). Etapa de teste "
+           "antes de expandir para cima/esquerda/direita.")
 
 import math
 import clr
@@ -55,8 +52,6 @@ bending_type = bending_types[0]
 
 # ------------------------------------------------------------------
 # Sistema de eixos 2D da view (u = direita, v = cima).
-# Projetar tudo nesses eixos permite o script funcionar tanto em
-# planta quanto em corte/elevacao, sem depender de X/Y/Z fixos.
 # ------------------------------------------------------------------
 
 right_dir = view.RightDirection
@@ -85,7 +80,6 @@ def bbox_corners(bbox):
 
 
 def bbox_uv_range(bbox):
-    """Retorna (u_min, u_max, v_min, v_max) projetando a bbox 3D nos eixos da view."""
     us, vs = [], []
     for c in bbox_corners(bbox):
         u, v = to_uv(c)
@@ -102,9 +96,7 @@ def get_bbox(elem):
 
 
 # ------------------------------------------------------------------
-# Criterio: pega TODOS os rebars hospedados em uma Wall que sejam
-# visiveis na view ativa. (Reforco de aberturas sempre fica em paredes,
-# entao isso cobre o caso sem depender de marcacao adicional.)
+# Coleta todos os rebars hospedados em Wall, visiveis na view.
 # ------------------------------------------------------------------
 
 all_rebars = (
@@ -146,116 +138,88 @@ if not target_rebars:
 
 
 # ------------------------------------------------------------------
-# Agrupa os rebars por parede hospedeira e calcula a caixa (em u/v)
-# da propria parede. Essa caixa e a referencia dos 4 lados
-# (cima / baixo / esquerda / direita).
+# Agrupamento por abertura (cluster horizontal na mesma parede).
 # ------------------------------------------------------------------
 
-GAP_FT = 1.5        # distancia entre o detalhe e a face da parede
-MIN_STEP_FT = 1.2   # distancia minima entre detalhes vizinhos no mesmo lado
+GAP_FT = 1.5
+CLUSTER_GAP_FT = 4.0
+VERTICAL_MARGIN = 1.3    # so classifica como barra vertical se for CLARAMENTE mais alta que larga
 
-walls_uv_range = {}   # wall_id -> (u_min, u_max, v_min, v_max)
-rebars_by_wall = {}   # wall_id -> lista de rebars
+rebar_uv = {}
+rebars_by_wall = {}
 
 for rb in target_rebars:
-    wall_id = rb.GetHostId()
-    rebars_by_wall.setdefault(wall_id, []).append(rb)
-
-    if wall_id in walls_uv_range:
-        continue
-
-    wall_elem = doc.GetElement(wall_id)
-    bb = get_bbox(wall_elem)
+    bb = get_bbox(rb)
     if not bb:
         continue
+    rebar_uv[rb.Id.IntegerValue] = bbox_uv_range(bb)
+    rebars_by_wall.setdefault(rb.GetHostId(), []).append(rb)
 
-    walls_uv_range[wall_id] = bbox_uv_range(bb)
+
+def cluster_rebars(rebars):
+    rebars_sorted = sorted(rebars, key=lambda r: sum(rebar_uv[r.Id.IntegerValue][0:2]) / 2.0)
+    clusters = []
+    current = []
+    last_ru = None
+    for rb in rebars_sorted:
+        u_min, u_max, v_min, v_max = rebar_uv[rb.Id.IntegerValue]
+        ru = (u_min + u_max) / 2.0
+        if last_ru is not None and (ru - last_ru) > CLUSTER_GAP_FT:
+            clusters.append(current)
+            current = []
+        current.append(rb)
+        last_ru = ru
+    if current:
+        clusters.append(current)
+    return clusters
 
 
 # ------------------------------------------------------------------
-# 
+# Para cada abertura: pega SOMENTE a barra horizontal mais de baixo
+# (1 barra por abertura). As demais (vertical/topo) ficam de fora
+# nesta etapa de teste.
 # ------------------------------------------------------------------
 
-# controla os "slots" ja usados em cada (parede, lado) para nao
-# sobrepor varios detalhes um em cima do outro
-occupied = {}  # (wall_id, lado) -> lista de coordenadas ja usadas
-
-
-def free_slot(wall_id, side, coord):
-    key = (wall_id, side)
-    used = occupied.setdefault(key, [])
-    c = coord
-    while any(abs(c - u) < MIN_STEP_FT for u in used):
-        c += MIN_STEP_FT
-    used.append(c)
-    return c
-
-
-placements = []  # (rebar, posicao XYZ, rotacao, lado)
-no_bbox_rebars = 0
+placements = []  # (rebar, posicao XYZ, rotacao)
 
 for wall_id, rebars in rebars_by_wall.items():
-    if wall_id not in walls_uv_range:
-        no_bbox_rebars += len(rebars)
-        continue
+    clusters = cluster_rebars(rebars)
 
-    u_min, u_max, v_min, v_max = walls_uv_range[wall_id]
+    for cluster in clusters:
+        u_op_min = min(rebar_uv[r.Id.IntegerValue][0] for r in cluster)
+        u_op_max = max(rebar_uv[r.Id.IntegerValue][1] for r in cluster)
+        v_op_min = min(rebar_uv[r.Id.IntegerValue][2] for r in cluster)
+        v_op_max = max(rebar_uv[r.Id.IntegerValue][3] for r in cluster)
+        center_v = (v_op_min + v_op_max) / 2.0
 
-    for rb in rebars:
-        bb = get_bbox(rb)
-        if not bb:
-            no_bbox_rebars += 1
+        # candidatas: barras horizontais (du >= dv) que estao abaixo do centro da abertura
+        candidatas = []
+        for rb in cluster:
+            bu_min, bu_max, bv_min, bv_max = rebar_uv[rb.Id.IntegerValue]
+            du = bu_max - bu_min
+            dv = bv_max - bv_min
+            is_vertical = dv > du * VERTICAL_MARGIN
+            rv = (bv_min + bv_max) / 2.0
+            if not is_vertical and rv < center_v:
+                candidatas.append(rb)
+
+        if not candidatas:
             continue
 
-        bu_min, bu_max, bv_min, bv_max = bbox_uv_range(bb)
-        ru = (bu_min + bu_max) / 2.0
-        rv = (bv_min + bv_max) / 2.0
-        du = bu_max - bu_min  
-        dv = bv_max - bv_min   
+        # entre as candidatas, pega a mais de baixo (menor v) -> 1 barra por abertura
+        barra_baixo = min(candidatas, key=lambda r: rebar_uv[r.Id.IntegerValue][2])
 
-        
-        dist_top = v_max - rv
-        dist_bottom = rv - v_min
-        dist_left = ru - u_min
-        dist_right = u_max - ru
-
-        side, _ = min(
-            (
-                ("cima", dist_top),
-                ("baixo", dist_bottom),
-                ("esquerda", dist_left),
-                ("direita", dist_right),
-            ),
-            key=lambda pair: pair[1],
-        )
-
-        if side == "cima":
-            u = free_slot(wall_id, side, ru)
-            v = v_max + GAP_FT
-        elif side == "baixo":
-            u = free_slot(wall_id, side, ru)
-            v = v_min - GAP_FT
-        elif side == "esquerda":
-            u = u_min - GAP_FT
-            v = free_slot(wall_id, side, rv)
-        else:  # direita
-            u = u_max + GAP_FT
-            v = free_slot(wall_id, side, rv)
-
+        bu_min, bu_max, bv_min, bv_max = rebar_uv[barra_baixo.Id.IntegerValue]
+        u = (bu_min + bu_max) / 2.0
+        v = v_op_min - GAP_FT
         pos = from_uv(u, v)
+        rotation = 0.0  # barra horizontal
 
-        # alinha a rotacao do detalhe com a direcao da propria barra:
-        # barra mais "deitada" (du >= dv) -> 0 graus, barra mais "em pe" -> 90 graus
-        rotation = 0.0 if du >= dv else math.pi / 2.0
-
-        placements.append((rb, pos, rotation, side))
-
-if no_bbox_rebars:
-    debug_lines.append("Rebars sem bounding box valida: {}".format(no_bbox_rebars))
+        placements.append((barra_baixo, pos, rotation))
 
 if not placements:
     forms.alert(
-        "Nao foi possivel calcular a posicao de nenhum detalhe.\n\nDiagnostico:\n" + "\n".join(debug_lines),
+        "Nao foi encontrada nenhuma barra horizontal de baixo nas aberturas da view.\n\nDiagnostico:\n" + "\n".join(debug_lines),
         exitscript=True,
     )
 
@@ -266,12 +230,11 @@ if not placements:
 
 created_count = 0
 skipped = []
-by_side_count = {"cima": 0, "baixo": 0, "esquerda": 0, "direita": 0}
 
-with Transaction(doc, "Criar Detalhes de Curvatura") as t:
+with Transaction(doc, "Criar Detalhes de Curvatura (baixo)") as t:
     t.Start()
 
-    for rb, pos, rotation, side in placements:
+    for rb, pos, rotation in placements:
         try:
             RebarBendingDetail.Create(
                 doc,
@@ -283,10 +246,9 @@ with Transaction(doc, "Criar Detalhes de Curvatura") as t:
                 rotation,
             )
             created_count += 1
-            by_side_count[side] += 1
         except Exception as e:
             skipped.append((rb.Id.IntegerValue, str(e)))
-            logger.debug("Falha ao criar bending detail para rebar {} (lado {}): {}".format(rb.Id, side, e))
+            logger.debug("Falha ao criar bending detail para rebar {}: {}".format(rb.Id, e))
 
     t.Commit()
 
@@ -296,10 +258,7 @@ with Transaction(doc, "Criar Detalhes de Curvatura") as t:
 # ------------------------------------------------------------------
 
 if created_count:
-    msg = "{} detalhe(s) de curvatura criado(s) com sucesso.".format(created_count)
-    msg += "\n  Cima: {}  |  Baixo: {}  |  Esquerda: {}  |  Direita: {}".format(
-        by_side_count["cima"], by_side_count["baixo"], by_side_count["esquerda"], by_side_count["direita"]
-    )
+    msg = "{} detalhe(s) de curvatura (barra de baixo) criado(s) com sucesso.".format(created_count)
     if skipped:
         msg += "\n\n{} rebar(s) nao puderam ser processados.".format(len(skipped))
         for rid, err in skipped[:5]:
