@@ -144,6 +144,7 @@ if not target_rebars:
 GAP_FT = 13.5
 CLUSTER_GAP_FT = 4.0
 VERTICAL_MARGIN = 1.3    # so classifica como barra vertical se for CLARAMENTE mais alta que larga
+DIAGONAL_EXTRA_GAP_FT = 2.0  # afasta as barras diagonais da barra horizontal de baixo
 
 rebar_uv = {}
 rebars_by_wall = {}
@@ -197,24 +198,33 @@ for wall_id, rebars in rebars_by_wall.items():
             du = bu_max - bu_min
             dv = bv_max - bv_min
             is_vertical = dv > du * VERTICAL_MARGIN
+            is_diagonal = (not is_vertical) and dv > du * 0.35
             rv = (bv_min + bv_max) / 2.0
-            if not is_vertical and rv < center_v:
+            if (not is_vertical) and rv < center_v:
                 candidatas.append(rb)
 
         if not candidatas:
             continue
 
-        # entre as candidatas, pega a mais de baixo (menor v) -> 1 barra por abertura
-        barra_baixo = min(candidatas, key=lambda r: rebar_uv[r.Id.IntegerValue][2])
+        # agora cria para todas as barras horizontais de baixo dessa abertura
+        barras_baixo = sorted(candidatas, key=lambda r: rebar_uv[r.Id.IntegerValue][2])
 
-        bu_min, bu_max, bv_min, bv_max = rebar_uv[barra_baixo.Id.IntegerValue]
-        u = (bu_min + bu_max) / 2.0
         base_v = wall_v_min if wall_v_min is not None else v_op_min
-        v = base_v - GAP_FT
-        pos = from_uv(u, v)
-        rotation = 0.0  
 
-        placements.append((barra_baixo, pos, rotation))
+        for barra_baixo in barras_baixo:
+            bu_min, bu_max, bv_min, bv_max = rebar_uv[barra_baixo.Id.IntegerValue]
+            u = (bu_min + bu_max) / 2.0
+            du = bu_max - bu_min
+            dv = bv_max - bv_min
+            is_vertical = dv > du * VERTICAL_MARGIN
+            is_diagonal = (not is_vertical) and dv > du * 0.35
+            v = base_v - GAP_FT
+            if is_diagonal:
+                v -= DIAGONAL_EXTRA_GAP_FT
+            pos = from_uv(u, v)
+            rotation = 0.0
+
+            placements.append((barra_baixo, pos, rotation))
 
 if not placements:
     forms.alert(
