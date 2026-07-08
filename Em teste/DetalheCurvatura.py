@@ -22,7 +22,7 @@ logger = script.get_logger()
 
 
 # ------------------------------------------------------------------
-# Validacoes iniciais
+# FIM DOS IMPORTS
 # ------------------------------------------------------------------
 
 if view.ViewType not in (
@@ -141,7 +141,7 @@ if not target_rebars:
 # Agrupamento por abertura (cluster horizontal na mesma parede).
 # ------------------------------------------------------------------
 
-GAP_FT = 1.5
+GAP_FT = 13.5
 CLUSTER_GAP_FT = 4.0
 VERTICAL_MARGIN = 1.3    # so classifica como barra vertical se for CLARAMENTE mais alta que larga
 
@@ -174,16 +174,15 @@ def cluster_rebars(rebars):
     return clusters
 
 
-# ------------------------------------------------------------------
-# Para cada abertura: pega SOMENTE a barra horizontal mais de baixo
-# (1 barra por abertura). As demais (vertical/topo) ficam de fora
-# nesta etapa de teste.
-# ------------------------------------------------------------------
+
 
 placements = []  # (rebar, posicao XYZ, rotacao)
 
 for wall_id, rebars in rebars_by_wall.items():
     clusters = cluster_rebars(rebars)
+    wall = doc.GetElement(wall_id)
+    wall_bb = get_bbox(wall) if wall else None
+    wall_v_min = bbox_uv_range(wall_bb)[2] if wall_bb else None
 
     for cluster in clusters:
         u_op_min = min(rebar_uv[r.Id.IntegerValue][0] for r in cluster)
@@ -192,7 +191,6 @@ for wall_id, rebars in rebars_by_wall.items():
         v_op_max = max(rebar_uv[r.Id.IntegerValue][3] for r in cluster)
         center_v = (v_op_min + v_op_max) / 2.0
 
-        # candidatas: barras horizontais (du >= dv) que estao abaixo do centro da abertura
         candidatas = []
         for rb in cluster:
             bu_min, bu_max, bv_min, bv_max = rebar_uv[rb.Id.IntegerValue]
@@ -211,9 +209,10 @@ for wall_id, rebars in rebars_by_wall.items():
 
         bu_min, bu_max, bv_min, bv_max = rebar_uv[barra_baixo.Id.IntegerValue]
         u = (bu_min + bu_max) / 2.0
-        v = v_op_min - GAP_FT
+        base_v = wall_v_min if wall_v_min is not None else v_op_min
+        v = base_v - GAP_FT
         pos = from_uv(u, v)
-        rotation = 0.0  # barra horizontal
+        rotation = 0.0  
 
         placements.append((barra_baixo, pos, rotation))
 
@@ -224,9 +223,7 @@ if not placements:
     )
 
 
-# ------------------------------------------------------------------
-# Criacao dos Bending Details
-# ------------------------------------------------------------------
+
 
 created_count = 0
 skipped = []
