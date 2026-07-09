@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 __title__ = "Detalhe de Curvatura"
 __author__ = "Samuel"
-__version__ = "Versao 1.3 - somente barra horizontal de baixo (teste de logica)"
-__doc__ = ("Cria o Bending Detail apenas para a barra horizontal de BAIXO de cada "
-           "abertura visivel na view ativa (1 detalhe por abertura). Etapa de teste "
-           "antes de expandir para cima/esquerda/direita.")
+__version__ = "Versao 1.4 - barras horizontais de baixo e de cima"
+__doc__ = ("Cria o Bending Detail para as barras horizontais de BAIXO e de CIMA de cada "
+           "abertura visivel na view ativa (1 detalhe por barra encontrada).")
 
 import math
 import clr
@@ -184,6 +183,7 @@ for wall_id, rebars in rebars_by_wall.items():
     wall = doc.GetElement(wall_id)
     wall_bb = get_bbox(wall) if wall else None
     wall_v_min = bbox_uv_range(wall_bb)[2] if wall_bb else None
+    wall_v_max = bbox_uv_range(wall_bb)[3] if wall_bb else None
 
     for cluster in clusters:
         u_op_min = min(rebar_uv[r.Id.IntegerValue][0] for r in cluster)
@@ -192,7 +192,8 @@ for wall_id, rebars in rebars_by_wall.items():
         v_op_max = max(rebar_uv[r.Id.IntegerValue][3] for r in cluster)
         center_v = (v_op_min + v_op_max) / 2.0
 
-        candidatas = []
+        candidatas_baixo = []
+        candidatas_cima = []
         for rb in cluster:
             bu_min, bu_max, bv_min, bv_max = rebar_uv[rb.Id.IntegerValue]
             du = bu_max - bu_min
@@ -200,16 +201,22 @@ for wall_id, rebars in rebars_by_wall.items():
             is_vertical = dv > du * VERTICAL_MARGIN
             is_diagonal = (not is_vertical) and dv > du * 0.35
             rv = (bv_min + bv_max) / 2.0
-            if (not is_vertical) and rv < center_v:
-                candidatas.append(rb)
+            if not is_vertical:
+                if rv < center_v:
+                    candidatas_baixo.append(rb)
+                elif rv > center_v:
+                    candidatas_cima.append(rb)
 
-        if not candidatas:
+        if not candidatas_baixo and not candidatas_cima:
             continue
 
-        # agora cria para todas as barras horizontais de baixo dessa abertura
-        barras_baixo = sorted(candidatas, key=lambda r: rebar_uv[r.Id.IntegerValue][2])
+        barras_baixo = sorted(candidatas_baixo,
+                              key=lambda r: rebar_uv[r.Id.IntegerValue][2])
+        barras_cima = sorted(candidatas_cima,
+                             key=lambda r: rebar_uv[r.Id.IntegerValue][2])
 
-        base_v = wall_v_min if wall_v_min is not None else v_op_min
+        base_v_baixo = wall_v_min if wall_v_min is not None else v_op_min
+        base_v_cima = wall_v_max if wall_v_max is not None else v_op_max
 
         for barra_baixo in barras_baixo:
             bu_min, bu_max, bv_min, bv_max = rebar_uv[barra_baixo.Id.IntegerValue]
@@ -218,7 +225,7 @@ for wall_id, rebars in rebars_by_wall.items():
             dv = bv_max - bv_min
             is_vertical = dv > du * VERTICAL_MARGIN
             is_diagonal = (not is_vertical) and dv > du * 0.35
-            v = base_v - GAP_FT
+            v = base_v_baixo - GAP_FT
             if is_diagonal:
                 v -= DIAGONAL_EXTRA_GAP_FT
             pos = from_uv(u, v)
@@ -226,9 +233,24 @@ for wall_id, rebars in rebars_by_wall.items():
 
             placements.append((barra_baixo, pos, rotation))
 
+        for barra_cima in barras_cima:
+            bu_min, bu_max, bv_min, bv_max = rebar_uv[barra_cima.Id.IntegerValue]
+            u = (bu_min + bu_max) / 2.0
+            du = bu_max - bu_min
+            dv = bv_max - bv_min
+            is_vertical = dv > du * VERTICAL_MARGIN
+            is_diagonal = (not is_vertical) and dv > du * 0.35
+            v = GAP_FT
+            if is_diagonal:
+                v += DIAGONAL_EXTRA_GAP_FT
+            pos = from_uv(u, v)
+            rotation = 0.0
+
+            placements.append((barra_cima, pos, rotation))
+
 if not placements:
     forms.alert(
-        "Nao foi encontrada nenhuma barra horizontal de baixo nas aberturas da view.\n\nDiagnostico:\n" + "\n".join(debug_lines),
+        "Nao foi encontrada nenhuma barra horizontal de baixo ou de cima nas aberturas da view.\n\nDiagnostico:\n" + "\n".join(debug_lines),
         exitscript=True,
     )
 
@@ -238,7 +260,7 @@ if not placements:
 created_count = 0
 skipped = []
 
-with Transaction(doc, "Criar Detalhes de Curvatura (baixo)") as t:
+with Transaction(doc, "Criar Detalhes de Curvatura (baixo e cima)") as t:
     t.Start()
 
     for rb, pos, rotation in placements:
