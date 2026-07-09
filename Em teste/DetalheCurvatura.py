@@ -142,6 +142,7 @@ if not target_rebars:
 
 GAP_BAIXO_FT = 12.5
 GAP_CIMA_FT = 6.5
+GAP_ESQUERDA_FT = 16.5
 CLUSTER_GAP_FT = 4.0
 VERTICAL_MARGIN = 1.3    # so classifica como barra vertical se for CLARAMENTE mais alta que larga
 DIAGONAL_EXTRA_GAP_FT = 2.0  # afasta as barras diagonais da barra horizontal de baixo
@@ -248,6 +249,28 @@ for wall_id, rebars in rebars_by_wall.items():
             rotation = 0.0
 
             placements.append((barra_cima, pos, rotation))
+
+        barras_verticais = []
+        for rb in cluster:
+            bu_min, bu_max, bv_min, bv_max = rebar_uv[rb.Id.IntegerValue]
+            du = bu_max - bu_min
+            dv = bv_max - bv_min
+            is_vertical = dv > du * VERTICAL_MARGIN
+            if is_vertical:
+                barras_verticais.append(rb)
+
+        if barras_verticais:
+            barra_vertical_esquerda = sorted(
+                barras_verticais,
+                key=lambda r: (rebar_uv[r.Id.IntegerValue][0] + rebar_uv[r.Id.IntegerValue][1]) / 2.0,
+            )[0]
+            bu_min, bu_max, bv_min, bv_max = rebar_uv[barra_vertical_esquerda.Id.IntegerValue]
+            u = u_op_min - GAP_ESQUERDA_FT
+            v = (bv_min + bv_max) / 2.0
+            pos = from_uv(u, v)
+            rotation = 0.0
+
+            placements.append((barra_vertical_esquerda, pos, rotation))
 
 if not placements:
     forms.alert(
