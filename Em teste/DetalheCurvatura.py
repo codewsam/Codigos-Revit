@@ -240,7 +240,7 @@ for wall_id, rebars in rebars_by_wall.items():
             dv = bv_max - bv_min
             is_vertical = dv > du * VERTICAL_MARGIN
             is_diagonal = (not is_vertical) and dv > du * 0.35
-            v = GAP_FT
+            v = GAP_FT   #ultima mudança
             if is_diagonal:
                 v += DIAGONAL_EXTRA_GAP_FT
             pos = from_uv(u, v)
