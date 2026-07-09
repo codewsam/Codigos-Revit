@@ -140,7 +140,8 @@ if not target_rebars:
 # Agrupamento por abertura (cluster horizontal na mesma parede).
 # ------------------------------------------------------------------
 
-GAP_FT = 13.5
+GAP_BAIXO_FT = 12.5
+GAP_CIMA_FT = 6.5
 CLUSTER_GAP_FT = 4.0
 VERTICAL_MARGIN = 1.3    # so classifica como barra vertical se for CLARAMENTE mais alta que larga
 DIAGONAL_EXTRA_GAP_FT = 2.0  # afasta as barras diagonais da barra horizontal de baixo
@@ -225,7 +226,7 @@ for wall_id, rebars in rebars_by_wall.items():
             dv = bv_max - bv_min
             is_vertical = dv > du * VERTICAL_MARGIN
             is_diagonal = (not is_vertical) and dv > du * 0.35
-            v = base_v_baixo - GAP_FT
+            v = base_v_baixo - GAP_BAIXO_FT
             if is_diagonal:
                 v -= DIAGONAL_EXTRA_GAP_FT
             pos = from_uv(u, v)
@@ -240,7 +241,7 @@ for wall_id, rebars in rebars_by_wall.items():
             dv = bv_max - bv_min
             is_vertical = dv > du * VERTICAL_MARGIN
             is_diagonal = (not is_vertical) and dv > du * 0.35
-            v = GAP_FT   #ultima mudança
+            v = base_v_cima + GAP_CIMA_FT
             if is_diagonal:
                 v += DIAGONAL_EXTRA_GAP_FT
             pos = from_uv(u, v)
