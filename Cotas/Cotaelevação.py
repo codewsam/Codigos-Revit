@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 __title__ = "Cotar Elevacao"
-__version__ = "2.1"
+__version__ = "2.3"
 __doc__ = (
     "Cota, em UM clique, a parede + o transpasse da tela soldada em vistas\n"
     "de elevacao/corte - reproduz exatamente o padrao usado manualmente no\n"
@@ -18,7 +18,16 @@ __doc__ = (
     "  3. Monta tambem UMA cota TOTAL (base da tela -> topo da tela),\n"
     "     por fora da segmentada, mostrando a soma dos dois trechos;\n"
     "  4. Joga as linhas de cota um pouco pra fora da parede (por padrao,\n"
-    "     a esquerda - Config.LADO)."
+    "     a esquerda - Config.LADO);\n"
+    "  5. Paredes 'semelhantes' - mesma FabricArea (mesma tela) E mesmos\n"
+    "     valores resultantes (mesma altura/transpasse) - sao tratadas\n"
+    "     como UM grupo: so a primeira parede do grupo recebe cota; as\n"
+    "     demais (tipicamente retornos de canto da mesma tela, com a\n"
+    "     mesma altura) sao puladas, evitando repetir os mesmos numeros\n"
+    "     varias vezes na prancha;\n"
+    "  6. NAO cria cota duplicada: se a cota ja existe na vista de uma\n"
+    "     execucao anterior (mesma assinatura de referencias), ela e\n"
+    "     pulada."
 )
 
 # ============================================================
@@ -27,6 +36,7 @@ __doc__ = (
 from Autodesk.Revit.DB import (
     Options, Solid, PlanarFace, Line, ReferenceArray, XYZ,
     DimensionType, BuiltInParameter, FilteredElementCollector, Wall,
+    Dimension,
 )
 from Autodesk.Revit.DB.Structure import FabricArea
 from Autodesk.Revit.UI.Selection import ObjectType
@@ -351,7 +361,64 @@ def resolver_layout(cadeias_por_parede, sinal, tolz):
 
 
 # ============================================================
-# ETAPA 5 - Criacao das cotas
+# ETAPA 5 - Deduplicacao (assinatura por referencias)
+# ============================================================
+def stable_key(ref):
+    """Chave estavel de uma Reference (face/aresta), usada pra comparar
+    se duas cotas apontam exatamente pros mesmos elementos/geometria.
+    Retorna None se a referencia for invalida ou nao conseguir gerar a
+    representacao estavel."""
+    if ref is None:
+        return None
+    try:
+        return ref.ConvertToStableRepresentation(doc)
+    except Exception as e:
+        logger.debug("Falha ConvertToStableRepresentation: {}".format(e))
+        return None
+
+
+def assinatura_da_tarefa(pares):
+    """Assinatura de uma tarefa de cota = conjunto das chaves estaveis de
+    todas as referencias da cadeia. Duas tarefas com a mesma assinatura
+    gerariam uma Dimension idêntica (mesmos pontos/geometria referenciada),
+    mesmo vindo de paredes diferentes que compartilham a mesma FabricArea.
+    Retorna None se alguma referencia da cadeia for invalida (nesse caso o
+    tratamento de erro existente em criar_cotas_no_revit ja cobre)."""
+    chaves = []
+    for _, ref in pares:
+        k = stable_key(ref)
+        if k is None:
+            return None
+        chaves.append(k)
+    return frozenset(chaves)
+
+
+def coletar_assinaturas_existentes(view):
+    """Le as Dimension ja existentes na vista e monta o conjunto de
+    assinaturas correspondente, pra nao recriar uma cota que ja existe no
+    modelo (de uma execucao anterior do script, por exemplo)."""
+    existentes = set()
+    dims = FilteredElementCollector(doc, view.Id).OfClass(Dimension).ToElements()
+    for d in dims:
+        try:
+            refs = d.References
+        except Exception:
+            continue
+        chaves = []
+        ok = True
+        for i in range(refs.Size):
+            k = stable_key(refs.get_Item(i))
+            if k is None:
+                ok = False
+                break
+            chaves.append(k)
+        if ok and chaves:
+            existentes.add(frozenset(chaves))
+    return existentes
+
+
+# ============================================================
+# ETAPA 6 - Criacao das cotas
 # ============================================================
 def find_dim_type_by_name(nome):
     dtypes = list(FilteredElementCollector(doc).OfClass(DimensionType).ToElements())
@@ -384,23 +451,21 @@ def _cria_dim_line(axis, perp, valores_axis, perp_pos, margem):
     return Line.CreateBound(pt1, pt2)
 
 
-def criar_cotas_no_revit(tarefas, view, axis, perp, tolz, dim_type):
-    """Cria 1 dimension por tarefa (segmentada ou total). Se algum ponto
-    da cadeia nao tiver Reference valida (fallback sem tela), a tarefa e
-    reportada e pulada (nao da pra cotar sem referencia real)."""
-    criadas, erros = 0, 0
+def criar_cotas_no_revit(tarefas, view, axis, perp, tolz, dim_type, assinaturas_existentes):
+    """Cria 1 dimension por tarefa (segmentada ou total), pulando qualquer
+    tarefa cuja assinatura de referencias ja tenha sido usada - seja por
+    uma cota ja existente na vista (execucao anterior), seja por outra
+    tarefa desta mesma execucao (ex: 3 paredes compartilhando a mesma
+    FabricArea geram a mesma cota TOTAL). Se algum ponto da cadeia nao
+    tiver Reference valida (fallback sem tela), a tarefa e reportada e
+    pulada (nao da pra cotar sem referencia real)."""
+    criadas, erros, duplicadas = 0, 0, 0
     por_tipo = {"segmentada": 0, "total": 0}
+    vistos = set(assinaturas_existentes)
+
     with revit.Transaction("Cotar Elevacao"):
         for t in tarefas:
             pares = t["pares"]
-            # posicao no eixo: como Z e a vertical GLOBAL e a vista de
-            # elevacao/corte tem UpDirection = Z global no caso comum,
-            # projeta o ponto (0,0,z) no eixo da vista.
-            valores_axis = [dot(XYZ(0, 0, z), axis) for z, _ in pares]
-            dim_line = _cria_dim_line(axis, perp, valores_axis, t["perp_pos"], tolz.margem_ponta)
-            if dim_line is None:
-                logger.debug("Linha degenerada para parede {} ({}) - pulada.".format(t["wall_id"], t["tipo"]))
-                continue
 
             ra = ReferenceArray()
             valido = True
@@ -415,6 +480,22 @@ def criar_cotas_no_revit(tarefas, view, axis, perp, tolz, dim_type):
                 erros += 1
                 continue
 
+            assinatura = assinatura_da_tarefa(pares)
+            if assinatura is not None and assinatura in vistos:
+                logger.debug("Cota duplicada (parede {}, {}) - pulada.".format(
+                    t["wall_id"], t["tipo"]))
+                duplicadas += 1
+                continue
+
+            # posicao no eixo: como Z e a vertical GLOBAL e a vista de
+            # elevacao/corte tem UpDirection = Z global no caso comum,
+            # projeta o ponto (0,0,z) no eixo da vista.
+            valores_axis = [dot(XYZ(0, 0, z), axis) for z, _ in pares]
+            dim_line = _cria_dim_line(axis, perp, valores_axis, t["perp_pos"], tolz.margem_ponta)
+            if dim_line is None:
+                logger.debug("Linha degenerada para parede {} ({}) - pulada.".format(t["wall_id"], t["tipo"]))
+                continue
+
             try:
                 nd = doc.Create.NewDimension(view, dim_line, ra)
                 if dim_type:
@@ -424,10 +505,12 @@ def criar_cotas_no_revit(tarefas, view, axis, perp, tolz, dim_type):
                         logger.debug("Falha ao aplicar DimensionType: {}".format(e))
                 criadas += 1
                 por_tipo[t["tipo"]] = por_tipo.get(t["tipo"], 0) + 1
+                if assinatura is not None:
+                    vistos.add(assinatura)
             except Exception as e:
                 erros += 1
                 output.print_md("[ERRO] parede {}: falha ao criar cota: {}".format(t["wall_id"], e))
-    return criadas, erros, por_tipo
+    return criadas, erros, duplicadas, por_tipo
 
 
 # ============================================================
@@ -462,9 +545,12 @@ def main():
     tarefas = resolver_layout(cadeias_por_parede, Config.LADO, tolz)
 
     dim_type = find_dim_type_by_name(Config.NOME_TIPO_COTA_PADRAO)
+    assinaturas_existentes = coletar_assinaturas_existentes(view)
 
     try:
-        criadas, erros, por_tipo = criar_cotas_no_revit(tarefas, view, axis, perp, tolz, dim_type)
+        criadas, erros, duplicadas, por_tipo = criar_cotas_no_revit(
+            tarefas, view, axis, perp, tolz, dim_type, assinaturas_existentes
+        )
     except Exception as e:
         logger.error("Falha critica ao criar cotas: {}".format(e))
         forms.alert("Falha critica ao criar cotas:\n{}".format(e), exitscript=True)
@@ -474,6 +560,9 @@ def main():
     output.print_md("## {} cota(s) criada(s): {} segmentada(s) + {} total(is).".format(
         criadas, por_tipo.get("segmentada", 0), por_tipo.get("total", 0)
     ))
+    if duplicadas:
+        output.print_md("**{} cota(s) duplicada(s) evitada(s)** (mesma FabricArea/pontos ja cotados).".format(
+            duplicadas))
     if erros:
         output.print_md("**{} parede(s) falharam.**".format(erros))
 
