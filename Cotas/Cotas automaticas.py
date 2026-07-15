@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 __title__ = "Cotar Parede Completo"
-__version__ = "1.1"
+__version__ = "1.2"
 __doc__ = (
     "Cota automaticamente paredes (+ portas/janelas/pisos/escadas relacionados)\n"
     "em UM clique, reproduzindo o padrao observado nas views 'FORMA  DO TERREO'\n"
@@ -25,23 +25,31 @@ __doc__ = (
     "     (uma por direcao) e junta tudo, em vez de perguntar H ou V.\n"
     "  3. Coleta automatica de elementos se nada estiver selecionado (Paredes,\n"
     "     Portas, Janelas, Pisos, Escadas visiveis na view) - 'vasculhe tudo'.\n"
-    "  4. [v1.1] LADO DA COTA: alinhamentos que tocam parede com Function =\n"
-    "     Exterior (o mesmo parametro nativo do Revit) sao ancorados no\n"
-    "     extremo REAL do predio naquele eixo - cota da parede inteira E dos\n"
-    "     pedacos dela vai pra fora do contorno da casa, perto da parede\n"
-    "     (como no exemplo movido manualmente na 'FORMA  DA COBERTA'). Antes\n"
-    "     o lado era decidido so pela media dos pontos daquele alinhamento,\n"
-    "     que podia puxar pro lado errado se um elemento interno proximo\n"
-    "     contaminasse a media. Alinhamentos internos (sem parede exterior)\n"
-    "     continuam colados no proprio elemento, como esperado.\n"
+    "  4. LADO DA COTA: alinhamentos que tocam parede com Function = Exterior\n"
+    "     (o mesmo parametro nativo do Revit) sao ancorados no extremo REAL do\n"
+    "     predio naquele eixo - cota da parede inteira E dos pedacos dela vai\n"
+    "     pra fora do contorno da casa, perto da parede. Alinhamentos internos\n"
+    "     (sem parede exterior) continuam colados no proprio elemento.\n"
     "  5. Deduplicacao por referencia estavel (nao so por valor arredondado)\n"
     "     conferida tanto contra o que ja existe na view quanto dentro da\n"
     "     propria execucao - reexecutar o script nao recria cotas repetidas.\n"
     "  6. Try/except granular em cada etapa (elemento, face, parede, tarefa) -\n"
-    "     um erro isolado e reportado e pulado, nunca trava o resto.\n\n"
+    "     um erro isolado e reportado e pulado, nunca trava o resto.\n"
+    "  7. [v1.2] SUB-COTAS POR CRUZAMENTO PERPENDICULAR: dentro de uma mesma\n"
+    "     corrente (mesma parede/fileira), qualquer parede perpendicular que\n"
+    "     cruza a parede-host em algum ponto do meio dela agora vira uma\n"
+    "     referencia EXTRA naquela corrente (reaproveitando a face que a\n"
+    "     propria extracao ja pegou para essa parede perpendicular, no mesmo\n"
+    "     eixo) - isso gera 'sub-cotas' automaticas (nivel 'vaos') pedaco a\n"
+    "     pedaco, exatamente como cotado manualmente (ex.: 511.3 dentro de um\n"
+    "     total de 650.0). ISSO NUNCA CORTA a cota total da parede nem do\n"
+    "     alinhamento - so adiciona pontos intermediarios na mesma cadeia.\n"
+    "     (Essa era a tentativa errada da v1.1->v1.2 anterior, que separava a\n"
+    "     corrente em 'vaos reais' e quebrava a cota total; revertido aqui.)\n\n"
     "Camadas de cota geradas por alinhamento (igual pilha manual):\n"
     "  Nivel 0 - vaos/detalhe: um segmento por trecho entre referencias\n"
-    "            consecutivas (portas, janelas, cantos), colado no elemento;\n"
+    "            consecutivas (portas, janelas, cantos, cruzamentos\n"
+    "            perpendiculares), colado no elemento;\n"
     "  Nivel 1 - total por PAREDE INDIVIDUAL: uma cota so daquela parede,\n"
     "            ponta a ponta (mesmo que ela esteja num alinhamento maior\n"
     "            com outras paredes);\n"
@@ -102,6 +110,14 @@ class Config(object):
     GAP_GERAL_CM         = 60.0   # afastamento extra da cota GERAL (nivel 3)
     MARGEM_PONTA_CM      = 20.0   # quanto a linha de cota estica alem das pontas
 
+    # [v1.2] Cruzamentos perpendiculares (sub-cotas dentro da corrente)
+    TOL_CRUZAMENTO_EXTENSAO_CM = 5.0    # quanto o cruzamento pode "estourar" a
+                                          # extensao da parede (cantos/juntas)
+    LARGURA_CRUZAMENTO_PADRAO_CM = 30.0  # fallback se a Width da parede
+                                          # perpendicular nao puder ser lida
+    FATOR_LARGURA_CRUZAMENTO = 1.5       # margem de busca da face mais
+                                          # proxima = largura da parede * isso
+
     # Filtro de ruido: ignora faces menores que isso (m2)
     AREA_MINIMA_FACE_M2 = 0.02
 
@@ -130,6 +146,9 @@ class Tolerancias(object):
         self.gap_nivel     = to_ft(Config.GAP_NIVEL_CM * f)
         self.gap_geral     = to_ft(Config.GAP_GERAL_CM * f)
         self.margem_ponta  = to_ft(Config.MARGEM_PONTA_CM * f)
+        # cruzamento nao escala com a vista - e' geometria real do modelo
+        self.tol_cruzamento_extensao = to_ft(Config.TOL_CRUZAMENTO_EXTENSAO_CM)
+        self.largura_cruzamento_padrao = to_ft(Config.LARGURA_CRUZAMENTO_PADRAO_CM)
 
 
 def dot(a, b):
@@ -371,6 +390,162 @@ def montar_correntes(itens, tol_cluster, tol_dedup, paredes_exteriores):
 
 
 # ============================================================
+# ETAPA 3.5 [v1.2] - Sub-cotas por cruzamento perpendicular
+# ============================================================
+def _linha_da_parede(wall):
+    """Retorna (p0, p1) da LocationCurve da parede, so se for reta (Line).
+    Paredes curvas ou sem LocationCurve sao ignoradas (retorna None) -
+    nao entram na logica de cruzamento, mas continuam cotadas normalmente
+    pelo resto do pipeline."""
+    try:
+        loc = wall.Location
+        curve = getattr(loc, "Curve", None)
+        if curve is None or not isinstance(curve, Line):
+            return None
+        return curve.GetEndPoint(0), curve.GetEndPoint(1)
+    except Exception as e:
+        logger.debug("Sem LocationCurve reta para parede {}: {}".format(
+            getattr(wall.Id, "IntegerValue", "?"), e))
+        return None
+
+
+def _intersecao_2d(p1, d1n, p2, d2n):
+    """Interseccao de duas retas (no plano XY) definidas por ponto+direcao
+    UNITARIA. Retorna (t, s) = distancia ao longo de d1n/d2n ate o ponto de
+    encontro, ou None se forem paralelas."""
+    denom = d1n.X * d2n.Y - d1n.Y * d2n.X
+    if abs(denom) < 1e-9:
+        return None
+    dx = p2.X - p1.X
+    dy = p2.Y - p1.Y
+    t = (dx * d2n.Y - dy * d2n.X) / denom
+    s = (dx * d1n.Y - dy * d1n.X) / denom
+    return t, s
+
+
+def _cruzamentos_perpendiculares(host_wall, candidatas, perp_dir, tol_extensao):
+    """Acha, entre 'candidatas', as paredes cuja linha de eixo e'
+    aproximadamente perpendicular ao eixo de cota (alinhada com perp_dir)
+    E cruza a extensao da parede host_wall (com folga de tol_extensao pra
+    pegar cantos/juntas no limite). Retorna lista de (wall, ponto_3d)."""
+    resultado = []
+    linha_host = _linha_da_parede(host_wall)
+    if linha_host is None:
+        return resultado
+    p0, p1 = linha_host
+    d1 = XYZ(p1.X - p0.X, p1.Y - p0.Y, 0.0)
+    len1 = d1.GetLength()
+    if len1 < 1e-6:
+        return resultado
+    d1n = d1.Normalize()
+
+    for w in candidatas:
+        if w.Id.IntegerValue == host_wall.Id.IntegerValue:
+            continue
+        linha_w = _linha_da_parede(w)
+        if linha_w is None:
+            continue
+        q0, q1 = linha_w
+        d2 = XYZ(q1.X - q0.X, q1.Y - q0.Y, 0.0)
+        len2 = d2.GetLength()
+        if len2 < 1e-6:
+            continue
+        d2n = d2.Normalize()
+
+        # a parede candidata precisa ser ~perpendicular ao eixo de cota
+        # (ou seja, alinhada com a direcao perpendicular ao eixo)
+        if abs(dot(d2n, perp_dir)) < 0.8:
+            continue
+
+        inter = _intersecao_2d(p0, d1n, q0, d2n)
+        if inter is None:
+            continue
+        t, s = inter
+        if t < -tol_extensao or t > len1 + tol_extensao:
+            continue
+        if s < -tol_extensao or s > len2 + tol_extensao:
+            continue
+
+        ponto = XYZ(p0.X + d1n.X * t, p0.Y + d1n.Y * t, p0.Z)
+        resultado.append((w, ponto))
+
+    return resultado
+
+
+def adicionar_cruzamentos_perpendiculares(correntes, itens_todos, elementos, axis, perp, tolz):
+    """[v1.2] Para cada corrente, procura paredes perpendiculares que
+    cruzam alguma das paredes-host dessa corrente NO MEIO dela (nao so nas
+    pontas) e injeta um ponto de referencia extra ali - reaproveitando a
+    face que 'extrair_faces_referenciaveis' ja extraiu para essa parede
+    perpendicular nesse mesmo eixo (nunca cria Reference nova).
+
+    Isso NUNCA corta a corrente: so adiciona pontos intermediarios, entao
+    a cota total (parede_total/alinhamento_total) continua ponta-a-ponta
+    igual antes; so o nivel 'vaos' ganha mais segmentos (sub-cotas)."""
+    paredes_por_id = {}
+    for el in elementos:
+        if isinstance(el, Wall):
+            paredes_por_id[el.Id.IntegerValue] = el
+    todas_paredes = list(paredes_por_id.values())
+
+    total_adicionados = 0
+    for c in correntes:
+        itens_c = c["itens"]
+        host_ids = sorted(set(it["host_id"] for it in itens_c if it["host_id"] is not None))
+        pontos_add = []
+
+        for hid in host_ids:
+            host_wall = paredes_por_id.get(hid)
+            if host_wall is None:
+                continue
+
+            try:
+                cruzamentos = _cruzamentos_perpendiculares(
+                    host_wall, todas_paredes, perp, tolz.tol_cruzamento_extensao
+                )
+            except Exception as e:
+                logger.debug("Falha ao buscar cruzamentos da parede {}: {}".format(hid, e))
+                continue
+
+            for w, ponto in cruzamentos:
+                pos_axis_cruz = dot(ponto, axis)
+                wid = w.Id.IntegerValue
+
+                candidatos = [it for it in itens_todos if it["host_id"] == wid]
+                if not candidatos:
+                    continue
+
+                melhor = min(candidatos, key=lambda it: abs(it["pos_axis"] - pos_axis_cruz))
+
+                try:
+                    largura = w.Width  # ja vem em pes (unidade interna)
+                    limite = largura * Config.FATOR_LARGURA_CRUZAMENTO
+                except Exception:
+                    limite = tolz.largura_cruzamento_padrao
+
+                if abs(melhor["pos_axis"] - pos_axis_cruz) > limite:
+                    # face mais proxima esta longe demais do cruzamento
+                    # real - provavelmente pegou a ponta errada da parede,
+                    # entao descarta pra nao inventar uma sub-cota errada.
+                    continue
+
+                pontos_add.append(melhor)
+
+        if pontos_add:
+            todos = itens_c + pontos_add
+            todos_ordenados = sorted(todos, key=lambda t: t["pos_axis"])
+            novo = dedupe_por_posicao(todos_ordenados, tolz.tol_dim_zero)
+            total_adicionados += max(0, len(novo) - len(itens_c))
+            c["itens"] = novo
+
+    if total_adicionados:
+        output.print_md("  [INFO] {} ponto(s) de cruzamento perpendicular adicionado(s) (sub-cotas).".format(
+            total_adicionados))
+
+    return correntes
+
+
+# ============================================================
 # ETAPA 4 - Deduplicacao GLOBAL por referencia estavel (persistente)
 # ============================================================
 def stable_key(ref):
@@ -430,13 +605,22 @@ def coletar_assinaturas_existentes(view):
 # ============================================================
 def gerar_tarefas_de_cota(correntes, itens_todos, tolz):
     """Camadas por alinhamento:
-      nivel 0 'vaos'            - so se a corrente tiver >2 referencias;
+      nivel 0 'vaos'            - so se a corrente tiver >2 referencias
+                                   (inclui pontos de cruzamento do v1.2);
       nivel 1 'parede_total'    - uma por PAREDE INDIVIDUAL (host_id),
                                    usando so os pontos daquela parede;
       nivel 2 'alinhamento_total' - so quando o alinhamento tem MAIS de
                                    uma parede (fileira de paredes);
     Fora do loop por corrente:
       nivel 3 'geral'           - uma por eixo, por fora de tudo.
+
+    Nota [v1.2]: pontos de cruzamento perpendicular injetados por
+    'adicionar_cruzamentos_perpendiculares' tem host_id de uma parede QUE
+    NAO PERTENCE a esta corrente (e' a parede que cruza, nao a parede-host
+    da corrente) - por isso normalmente aparecem sozinhos (1 ponto) no
+    'paredes_na_corrente' abaixo, e como pontos_parede exige >=2 pontos
+    para gerar 'parede_total', esse cruzamento nunca cria uma cota
+    'parede_total' indevida - ele so participa dos segmentos 'vaos'.
     """
     tarefas = []
     for c in correntes:
@@ -686,10 +870,10 @@ def criar_cotas_no_revit(tarefas, view, axis, perp, tolz, dim_type):
 # MAIN
 # ============================================================
 def processar_eixo(elementos, view, axis, perp, nome_eixo, tolz, assinaturas_existentes, paredes_exteriores):
-    """Roda o pipeline completo (extracao -> alinhamento -> tarefas ->
-    dedup -> layout) para UM eixo (H ou V). Retorna a lista de tarefas
-    prontas (com perp_pos definido) - a criacao no Revit e feita depois,
-    juntando H + V numa unica transacao."""
+    """Roda o pipeline completo (extracao -> alinhamento -> cruzamentos ->
+    tarefas -> dedup -> layout) para UM eixo (H ou V). Retorna a lista de
+    tarefas prontas (com perp_pos definido) - a criacao no Revit e feita
+    depois, juntando H + V numa unica transacao."""
     output.print_md("### Eixo {}".format(nome_eixo))
 
     itens = extrair_faces_referenciaveis(elementos, axis, perp)
@@ -705,6 +889,10 @@ def processar_eixo(elementos, view, axis, perp, nome_eixo, tolz, assinaturas_exi
     n_perimetro = sum(1 for c in correntes if c["perimetro"])
     output.print_md("  {} alinhamento(s) encontrado(s) nesse eixo ({} de perimetro/exterior).".format(
         len(correntes), n_perimetro))
+
+    # [v1.2] injeta pontos de cruzamento perpendicular (sub-cotas), sem
+    # cortar a corrente - so acrescenta referencias no meio dela.
+    correntes = adicionar_cruzamentos_perpendiculares(correntes, itens, elementos, axis, perp, tolz)
 
     tarefas = gerar_tarefas_de_cota(correntes, itens, tolz)
     tarefas = remover_tarefas_duplicadas(tarefas, assinaturas_existentes)
@@ -756,8 +944,6 @@ def main():
     tarefas_h = processar_eixo(elementos, view, axis_h, perp_h, "Horizontal", tolz, assinaturas_existentes, paredes_exteriores)
     tarefas_v = processar_eixo(elementos, view, axis_v, perp_v, "Vertical", tolz, assinaturas_existentes, paredes_exteriores)
 
-    # Junta H + V e faz uma segunda passada de deduplicacao (pode ter
-    # coincidencia de assinatura entre os dois eixos em casos degenerados).
     todas_tarefas = tarefas_h + tarefas_v
     if not todas_tarefas:
         forms.alert(
@@ -769,8 +955,6 @@ def main():
 
     try:
         criadas_total, erros_total, por_nome_total = 0, 0, {}
-        with revit.Transaction("Cotar Parede Completo"):
-            pass  # transacao real acontece dentro de criar_cotas_no_revit por eixo
 
         # Cria por eixo (cada chamada abre/fecha sua propria transacao
         # curta - assim um erro de commit num eixo nao contamina o outro).
