@@ -1,6 +1,57 @@
 # -*- coding: utf-8 -*-
 __title__ = "Cotar Parede Completo"
-__version__ = "1.0"
+__version__ = "1.1"
+__doc__ = (
+    "Cota automaticamente paredes (+ portas/janelas/pisos/escadas relacionados)\n"
+    "em UM clique, reproduzindo o padrao observado nas views 'FORMA  DO TERREO'\n"
+    "e 'FORMA  DA COBERTA' (cadeias de vaos/detalhe + cotas de linha unica, tipo\n"
+    "'Cota - 2 mm (cm) - 1 casa decimal vermelha', misturando H e V na mesma\n"
+    "prancha, com as cotas de parede exterior por fora do contorno da casa).\n\n"
+    "Fusao dos dois scripts anteriores:\n"
+    "  - Cotar Selecao (v3.0): agrupamento por alinhamento, camadas\n"
+    "    vaos/parede-total/geral, filtro de faces pequenas, modo rapido/preciso.\n"
+    "  - Cotar Elevacao (v2.3): anti-duplicata PERSISTENTE via assinatura de\n"
+    "    referencia estavel (ConvertToStableRepresentation) - conferida contra\n"
+    "    as Dimension JA existentes na view, nao so dentro da mesma execucao.\n\n"
+    "O que mudou/foi corrigido em relacao ao Cotar Selecao original:\n"
+    "  1. BUG CORRIGIDO: a extracao de faces guardava host_id (parede-dona da\n"
+    "     face, inclusive de portas/janelas hospedadas), mas o agrupamento por\n"
+    "     alinhamento fazia unpack de 3 campos numa tupla de 4 - o host_id\n"
+    "     nunca era realmente usado. Agora e' usado para gerar a cota GERAL DE\n"
+    "     CADA PAREDE (pedido explicito), separada da cota geral do\n"
+    "     alinhamento inteiro (quando varias paredes ficam em fileira).\n"
+    "  2. Auto-deteccao dos DOIS eixos (H e V) na mesma execucao - a prancha\n"
+    "     real mistura os dois, entao o script roda o pipeline duas vezes\n"
+    "     (uma por direcao) e junta tudo, em vez de perguntar H ou V.\n"
+    "  3. Coleta automatica de elementos se nada estiver selecionado (Paredes,\n"
+    "     Portas, Janelas, Pisos, Escadas visiveis na view) - 'vasculhe tudo'.\n"
+    "  4. [v1.1] LADO DA COTA: alinhamentos que tocam parede com Function =\n"
+    "     Exterior (o mesmo parametro nativo do Revit) sao ancorados no\n"
+    "     extremo REAL do predio naquele eixo - cota da parede inteira E dos\n"
+    "     pedacos dela vai pra fora do contorno da casa, perto da parede\n"
+    "     (como no exemplo movido manualmente na 'FORMA  DA COBERTA'). Antes\n"
+    "     o lado era decidido so pela media dos pontos daquele alinhamento,\n"
+    "     que podia puxar pro lado errado se um elemento interno proximo\n"
+    "     contaminasse a media. Alinhamentos internos (sem parede exterior)\n"
+    "     continuam colados no proprio elemento, como esperado.\n"
+    "  5. Deduplicacao por referencia estavel (nao so por valor arredondado)\n"
+    "     conferida tanto contra o que ja existe na view quanto dentro da\n"
+    "     propria execucao - reexecutar o script nao recria cotas repetidas.\n"
+    "  6. Try/except granular em cada etapa (elemento, face, parede, tarefa) -\n"
+    "     um erro isolado e reportado e pulado, nunca trava o resto.\n\n"
+    "Camadas de cota geradas por alinhamento (igual pilha manual):\n"
+    "  Nivel 0 - vaos/detalhe: um segmento por trecho entre referencias\n"
+    "            consecutivas (portas, janelas, cantos), colado no elemento;\n"
+    "  Nivel 1 - total por PAREDE INDIVIDUAL: uma cota so daquela parede,\n"
+    "            ponta a ponta (mesmo que ela esteja num alinhamento maior\n"
+    "            com outras paredes);\n"
+    "  Nivel 2 - total do ALINHAMENTO: so criada quando o alinhamento tem MAIS\n"
+    "            de uma parede (fileira) - soma o trecho todo;\n"
+    "  Nivel 3 - GERAL da direcao: por fora de tudo, uma por eixo (H e V),\n"
+    "            cobrindo todas as referencias daquele eixo.\n"
+    "Niveis identicos (mesmas referencias) sao automaticamente descartados\n"
+    "pela deduplicacao, entao paredes sozinhas nao duplicam nivel1==nivel2.\n"
+)
 
 # ============================================================
 # IMPORTS
@@ -9,7 +60,7 @@ from Autodesk.Revit.DB import (
     Options, Solid, PlanarFace, ReferenceArray, Line, XYZ,
     DimensionType, BuiltInParameter, BuiltInCategory,
     FilteredElementCollector, Dimension, Wall, FamilyInstance,
-    ElementCategoryFilter, LogicalOrFilter,
+    ElementCategoryFilter, LogicalOrFilter, WallFunction,
 )
 
 from pyrevit import revit, forms, script
@@ -83,6 +134,28 @@ class Tolerancias(object):
 
 def dot(a, b):
     return a.X * b.X + a.Y * b.Y + a.Z * b.Z
+
+
+def identificar_paredes_exteriores(elementos):
+    """Retorna o set de ElementId.IntegerValue das paredes cuja Function
+    (parametro nativo do Revit, o mesmo usado no filtro 'Exterior/Interior'
+    do proprio software) e' Exterior. Usado pra decidir quais alinhamentos
+    sao 'perimetro do predio' (cota deve ir pra fora da casa) versus
+    alinhamentos internos (cota fica colada no proprio elemento, onde ja
+    estava). Se a leitura da Function falhar por qualquer motivo, a
+    parede e' tratada como interior (comportamento antigo, mais seguro)."""
+    exteriores = set()
+    for el in elementos:
+        if not isinstance(el, Wall):
+            continue
+        try:
+            wt = el.WallType
+            if wt is not None and wt.Function == WallFunction.Exterior:
+                exteriores.add(el.Id.IntegerValue)
+        except Exception as e:
+            logger.debug("Nao foi possivel ler Function da parede {}: {}".format(
+                el.Id.IntegerValue, e))
+    return exteriores
 
 
 # ============================================================
@@ -276,9 +349,10 @@ def agrupar_por_alinhamento(itens, tol):
     return grupos
 
 
-def montar_correntes(itens, tol_cluster, tol_dedup):
+def montar_correntes(itens, tol_cluster, tol_dedup, paredes_exteriores):
     """Cada corrente = {'itens': [...ordenados por pos_axis, dedup...],
-    'perp': media, 'host_ids': set de paredes presentes}."""
+    'perp': media, 'host_ids': set de paredes presentes,
+    'perimetro': True se alguma parede da corrente for Exterior}."""
     grupos = agrupar_por_alinhamento(itens, tol_cluster)
     correntes = []
     for grupo in grupos:
@@ -288,7 +362,11 @@ def montar_correntes(itens, tol_cluster, tol_dedup):
             continue
         perp_medio = sum(t["pos_perp"] for t in grupo_dedup) / len(grupo_dedup)
         host_ids = set(t["host_id"] for t in grupo_dedup if t["host_id"] is not None)
-        correntes.append({"itens": grupo_dedup, "perp": perp_medio, "host_ids": host_ids})
+        perimetro = bool(host_ids & paredes_exteriores)
+        correntes.append({
+            "itens": grupo_dedup, "perp": perp_medio,
+            "host_ids": host_ids, "perimetro": perimetro,
+        })
     return correntes
 
 
@@ -364,13 +442,14 @@ def gerar_tarefas_de_cota(correntes, itens_todos, tolz):
     for c in correntes:
         itens_c = c["itens"]
         tem_detalhe = len(itens_c) > 2
+        perimetro = c["perimetro"]
 
         if tem_detalhe:
             for i in range(len(itens_c) - 1):
                 tarefas.append({
                     "nome": "vaos",
                     "itens": [itens_c[i], itens_c[i + 1]],
-                    "perp_ref": c["perp"], "nivel": 0,
+                    "perp_ref": c["perp"], "nivel": 0, "perimetro": perimetro,
                 })
 
         # nivel 1: total por parede individual (pedido explicito do usuario)
@@ -385,6 +464,7 @@ def gerar_tarefas_de_cota(correntes, itens_todos, tolz):
                 "nome": "parede_total",
                 "itens": [pontos_parede[0], pontos_parede[-1]],
                 "perp_ref": c["perp"], "nivel": 1 if tem_detalhe else 0,
+                "perimetro": perimetro,
             })
 
         # nivel 2: total do alinhamento inteiro (SO se tiver mais de 1 parede)
@@ -392,7 +472,7 @@ def gerar_tarefas_de_cota(correntes, itens_todos, tolz):
             tarefas.append({
                 "nome": "alinhamento_total",
                 "itens": [itens_c[0], itens_c[-1]],
-                "perp_ref": c["perp"], "nivel": 2,
+                "perp_ref": c["perp"], "nivel": 2, "perimetro": perimetro,
             })
         elif not paredes_na_corrente:
             # nenhuma face pertence a uma parede identificavel (ex.: so
@@ -402,6 +482,7 @@ def gerar_tarefas_de_cota(correntes, itens_todos, tolz):
                 "nome": "alinhamento_total",
                 "itens": [itens_c[0], itens_c[-1]],
                 "perp_ref": c["perp"], "nivel": 1 if tem_detalhe else 0,
+                "perimetro": perimetro,
             })
 
     if itens_todos:
@@ -447,23 +528,63 @@ def remover_tarefas_duplicadas(tarefas, assinaturas_existentes):
 # ETAPA 6 - Layout (posicao perpendicular final de cada tarefa)
 # ============================================================
 def resolver_layout(tarefas, centro_perp_modelo, tolz):
-    """Decide automaticamente o LADO de cada alinhamento (pra fora do
-    centro do modelo, sem precisar clicar um ponto) e empilha os niveis
-    0/1/2 colados no elemento, com a GERAL (nivel 3) por fora de tudo."""
+    """Decide o LADO/posicao final de cada alinhamento, sem precisar
+    clicar um ponto:
+
+    - Alinhamentos de PERIMETRO (tocam parede com Function=Exterior):
+      ancorados no extremo REAL do predio naquele eixo (o menor/maior
+      pos_perp entre TODAS as faces de paredes exteriores) - a cota fica
+      colada por fora da casa, perto da parede, nao 'flutuando' pra
+      dentro so porque um elemento interno prox puxou a media pro lado
+      errado. Empilha nivel 0 (vaos/pedacos) -> 1 (parede) -> 2
+      (alinhamento) nessa ordem, sempre se afastando mais da casa.
+
+    - Alinhamentos internos (sem parede exterior): mantem o criterio
+      antigo (lado que fica mais longe do centro do modelo), colado no
+      proprio elemento - e' o esperado, ja que os pontos referenciados
+      estao mesmo dentro da planta.
+    """
     perp_por_alinhamento = {}
     for t in tarefas:
         if t["nome"] == "geral":
             continue
         perp_por_alinhamento.setdefault(t["perp_ref"], []).append(t)
 
+    # Extremos reais do PERIMETRO (so entre alinhamentos marcados como
+    # perimetro=True) - referencia para "fora da casa".
+    perps_perimetro = [
+        perp_ref for perp_ref, lista in perp_por_alinhamento.items()
+        if lista and lista[0]["perimetro"]
+    ]
+    perimetro_min = min(perps_perimetro) if perps_perimetro else None
+    perimetro_max = max(perps_perimetro) if perps_perimetro else None
+
     perp_extremos = []
     for perp_ref, lista in perp_por_alinhamento.items():
-        sinal = 1.0 if perp_ref >= centro_perp_modelo else -1.0
-        for t in lista:
-            base = perp_ref + sinal * tolz.cola_elemento
-            perp_pos = base + sinal * (t["nivel"] * tolz.gap_nivel)
-            t["perp_pos"] = perp_pos
-            perp_extremos.append((sinal, perp_pos))
+        eh_perimetro = lista[0]["perimetro"]
+
+        if eh_perimetro and perimetro_min is not None and perimetro_max is not None:
+            dist_min = abs(perp_ref - perimetro_min)
+            dist_max = abs(perimetro_max - perp_ref)
+            if dist_min <= dist_max:
+                sinal = -1.0
+                extremo = perimetro_min
+            else:
+                sinal = 1.0
+                extremo = perimetro_max
+            for t in lista:
+                perp_pos = extremo + sinal * (tolz.cola_elemento + t["nivel"] * tolz.gap_nivel)
+                t["perp_pos"] = perp_pos
+                perp_extremos.append((sinal, perp_pos))
+        else:
+            # comportamento antigo: lado mais longe do centro do modelo,
+            # colado na propria posicao do alinhamento.
+            sinal = 1.0 if perp_ref >= centro_perp_modelo else -1.0
+            for t in lista:
+                base = perp_ref + sinal * tolz.cola_elemento
+                perp_pos = base + sinal * (t["nivel"] * tolz.gap_nivel)
+                t["perp_pos"] = perp_pos
+                perp_extremos.append((sinal, perp_pos))
 
     for t in tarefas:
         if t["nome"] != "geral":
@@ -564,7 +685,7 @@ def criar_cotas_no_revit(tarefas, view, axis, perp, tolz, dim_type):
 # ============================================================
 # MAIN
 # ============================================================
-def processar_eixo(elementos, view, axis, perp, nome_eixo, tolz, assinaturas_existentes):
+def processar_eixo(elementos, view, axis, perp, nome_eixo, tolz, assinaturas_existentes, paredes_exteriores):
     """Roda o pipeline completo (extracao -> alinhamento -> tarefas ->
     dedup -> layout) para UM eixo (H ou V). Retorna a lista de tarefas
     prontas (com perp_pos definido) - a criacao no Revit e feita depois,
@@ -576,12 +697,14 @@ def processar_eixo(elementos, view, axis, perp, nome_eixo, tolz, assinaturas_exi
         output.print_md("  [INFO] menos de 2 referencias nesse eixo - nada a cotar aqui.")
         return []
 
-    correntes = montar_correntes(itens, tolz.cluster_tol, tolz.tol_dim_zero)
+    correntes = montar_correntes(itens, tolz.cluster_tol, tolz.tol_dim_zero, paredes_exteriores)
     if not correntes:
         output.print_md("  [INFO] nenhum alinhamento valido nesse eixo.")
         return []
 
-    output.print_md("  {} alinhamento(s) encontrado(s) nesse eixo.".format(len(correntes)))
+    n_perimetro = sum(1 for c in correntes if c["perimetro"])
+    output.print_md("  {} alinhamento(s) encontrado(s) nesse eixo ({} de perimetro/exterior).".format(
+        len(correntes), n_perimetro))
 
     tarefas = gerar_tarefas_de_cota(correntes, itens, tolz)
     tarefas = remover_tarefas_duplicadas(tarefas, assinaturas_existentes)
@@ -617,6 +740,10 @@ def main():
 
     elementos = coletar_elementos(view)
 
+    paredes_exteriores = identificar_paredes_exteriores(elementos)
+    output.print_md("**{} parede(s) identificada(s) como Exterior** (Function do WallType) - "
+        "as cotas de parede/pedaco dessas vao pra fora da casa.".format(len(paredes_exteriores)))
+
     assinaturas_existentes = coletar_assinaturas_existentes(view)
     output.print_md("**{} assinatura(s) de cota ja existente(s)** na vista (nao serao repetidas).".format(
         len(assinaturas_existentes)))
@@ -626,8 +753,8 @@ def main():
     axis_h, perp_h = eixo_h
     axis_v, perp_v = perp_h, axis_h  # eixo V e' simplesmente o H trocado
 
-    tarefas_h = processar_eixo(elementos, view, axis_h, perp_h, "Horizontal", tolz, assinaturas_existentes)
-    tarefas_v = processar_eixo(elementos, view, axis_v, perp_v, "Vertical", tolz, assinaturas_existentes)
+    tarefas_h = processar_eixo(elementos, view, axis_h, perp_h, "Horizontal", tolz, assinaturas_existentes, paredes_exteriores)
+    tarefas_v = processar_eixo(elementos, view, axis_v, perp_v, "Vertical", tolz, assinaturas_existentes, paredes_exteriores)
 
     # Junta H + V e faz uma segunda passada de deduplicacao (pode ter
     # coincidencia de assinatura entre os dois eixos em casos degenerados).
