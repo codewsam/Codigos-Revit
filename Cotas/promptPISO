@@ -1,0 +1,175 @@
+Esse prompt fica melhor se você deixar claro que **ele não deve reescrever do zero**, e sim **evoluir o código existente**. Também é importante dizer que o foco é a arquitetura, não apenas fazer funcionar.
+
+---
+
+# PROMPT
+
+Vou enviar um código Python (pyRevit) que já funciona parcialmente.
+
+**Não quero que você reescreva o projeto do zero.**
+
+Quero que você utilize **esse código como base**, preserve ao máximo sua estrutura e arquitetura, e me devolva **apenas o código melhorado**, implementando a estratégia descrita abaixo.
+
+Antes de alterar qualquer coisa, leia todo o código para entender o fluxo atual.
+
+Se perceber que alguma parte da arquitetura atual deve ser modificada para suportar a nova abordagem, faça isso, mas apenas quando realmente necessário.
+
+---
+
+# Objetivo
+
+Quero abandonar a estratégia de descobrir o alinhamento percorrendo parede por parede.
+
+Atualmente essa abordagem gera problemas como:
+
+* paredes sendo visitadas mais de uma vez;
+* loops;
+* duplicação de referências;
+* dificuldade para descobrir corretamente o início e o fim do alinhamento.
+
+Quero substituir essa lógica por uma abordagem baseada no **Piso (Floor)**.
+
+---
+
+# Nova estratégia
+
+Depois que o usuário selecionar uma parede:
+
+1. Encontrar o piso correspondente.
+2. Utilizar o piso como referência geométrica principal.
+3. Obter o contorno completo do piso.
+4. Utilizar esse contorno para identificar as paredes pertencentes ao alinhamento.
+5. Somente depois disso coletar as referências para cotagem.
+
+Não quero mais uma busca recursiva parede → parede → parede.
+
+A descoberta das paredes deve acontecer apenas uma vez.
+
+Depois disso o restante do algoritmo deve trabalhar somente sobre essa lista de paredes.
+
+---
+
+# Arquitetura desejada
+
+Quero separar claramente duas responsabilidades.
+
+## Etapa 1
+
+Descobrir as paredes.
+
+Resultado esperado:
+
+Uma lista ordenada contendo apenas as paredes do alinhamento.
+
+Exemplo:
+
+```
+Parede 1
+Parede 2
+Parede 3
+Parede 4
+```
+
+Depois que essa lista existir, nenhuma outra parte do código deve procurar paredes novamente.
+
+---
+
+## Etapa 2
+
+Coletar referências.
+
+Somente após possuir essa lista de paredes.
+
+As referências deverão ser:
+
+* extremidade inicial
+* extremidade final
+* encontros entre paredes
+* portas
+* janelas
+
+Não misture descoberta de paredes com descoberta de referências.
+
+---
+
+# Cotas desejadas
+
+O resultado final continua sendo exatamente o mesmo.
+
+Quero três linhas de cota.
+
+## 1 - Cota detalhada
+
+Deve conter:
+
+* extremidades
+* encontros entre paredes
+* portas
+* janelas
+
+(cota encadeada completa)
+
+---
+
+## 2 - Cota das paredes
+
+Deve conter apenas:
+
+* extremidade inicial
+* encontros entre paredes
+* extremidade final
+
+Ignorando portas e janelas.
+
+---
+
+## 3 - Cota geral
+
+Deve conter apenas:
+
+* primeira extremidade
+* última extremidade
+
+---
+
+# Antes de implementar
+
+Primeiro analise se realmente é possível utilizar o piso dessa maneira utilizando a API do Revit.
+
+Verifique:
+
+* se é possível obter o contorno do piso;
+* se é possível relacionar esse contorno às paredes existentes;
+* se essa estratégia é mais robusta do que percorrer paredes conectadas.
+
+Caso exista uma abordagem melhor utilizando o próprio piso, prefira essa solução.
+
+Não faça adaptações específicas para um único modelo de teste.
+
+Quero uma solução genérica e robusta.
+
+---
+
+# Requisitos importantes
+
+* Não reescreva o código inteiro.
+* Preserve a estrutura existente sempre que possível.
+* Reutilize funções já existentes quando fizer sentido.
+* Evite duplicação de lógica.
+* Não altere partes que já funcionam corretamente.
+* Caso alguma função precise ser modificada, explique rapidamente o motivo.
+
+---
+
+# Resposta esperada
+
+Não quero uma explicação teórica.
+
+Quero que você:
+
+1. Analise o código enviado.
+2. Identifique exatamente onde a lógica deve ser alterada.
+3. Faça as modificações necessárias.
+4. Me devolva **apenas o código atualizado**, pronto para substituir o original.
+
+Priorize uma solução limpa, reutilizável e compatível com uma futura migração para C#.
