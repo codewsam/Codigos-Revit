@@ -1,7 +1,24 @@
 # -*- coding: utf-8 -*-
-__title__ = "Cotar Selecao"
-__version__ = "2.1"
-__doc__ = ("cota - v2.1: mantem a unidade principal = PAREDE (v2.0). Toda "
+__title__ = "Cotar(sel)"
+__version__ = "2.3"
+__doc__ = ("cota - v2.3 (Fase 1 - causa real do bug de posicao): a causa "
+           "verdadeira da cota nascer longe da parede selecionada NAO era "
+           "o calculo de lado (v2.2) - era 'PlanarFace.Origin'. Em faces "
+           "de ponta/topo geradas por encontro (miter/join) com outra "
+           "parede, a API pode devolver um ponto do plano que fica FORA "
+           "dos limites reais da face (as vezes coincidindo com a "
+           "posicao de uma parede vizinha inteiramente diferente). Como "
+           "TODO pos_axis/pos_perp do pipeline vem de "
+           "'extrair_faces_referenciaveis', isso bastava para jogar a "
+           "cota pra longe da parede real. Corrigido usando um ponto "
+           "avaliado de verdade dentro da face (bounding box em UV + "
+           "Evaluate) em vez do Origin cru.\n\n"
+           "cota - v2.2 (mantido, ainda ajuda em outros casos): o calculo "
+           "de qual lado da parede recebe a cota individual (parede_total/"
+           "vaos) usa apenas as faces de contexto que sobrepoem o trecho "
+           "da propria parede, em vez da media de TODAS as paredes "
+           "paralelas da view.\n\n"
+           "cota - v2.1: mantem a unidade principal = PAREDE (v2.0). Toda "
            "parede e' processada individualmente e SEMPRE recebe cota "
            "geral (+ subcotas quando houver detalhe). Correntes/alinhamentos "
            "continuam servindo so para layout de alinhamento_total/geral.\n\n"
@@ -30,7 +47,7 @@ __doc__ = ("cota - v2.1: mantem a unidade principal = PAREDE (v2.0). Toda "
 # IMPORTS
 # ============================================================
 from Autodesk.Revit.DB import (
-    Options, Solid, PlanarFace, ReferenceArray, Line, XYZ,
+    Options, Solid, PlanarFace, ReferenceArray, Line, XYZ, UV,
     DimensionType, BuiltInParameter, BuiltInCategory,
     FilteredElementCollector, Dimension, Wall, FamilyInstance,
     ElementCategoryFilter, LogicalOrFilter, WallFunction,
@@ -464,6 +481,28 @@ def _obter_host_id(el):
     return None
 
 
+def _ponto_referencial_face(face):
+    """[Fase 1 - correcao real] 'PlanarFace.Origin' NAO e garantidamente
+    um ponto dentro dos limites visiveis da face - e' so um ponto usado
+    pela API para definir o plano/sistema de coordenadas. Em faces de
+    topo/ponta geradas por um encontro (miter/join) com outra parede,
+    isso pode devolver um ponto bem longe da face real, ao ponto de
+    coincidir com a posicao de uma parede vizinha completamente diferente
+    - foi exatamente essa a causa da cota "subir" pra longe da parede
+    selecionada. Aqui usamos o MEIO (em UV) da bounding box da propria
+    face e avaliamos nela, o que garante um ponto realmente sobre a
+    face. Se a avaliacao falhar por qualquer motivo (face degenerada),
+    cai de volta no Origin (comportamento antigo) em vez de descartar a
+    face inteira."""
+    try:
+        bb = face.GetBoundingBox()
+        uv_meio = UV((bb.Min.U + bb.Max.U) / 2.0, (bb.Min.V + bb.Max.V) / 2.0)
+        return face.Evaluate(uv_meio)
+    except Exception as e:
+        logger.debug("Falha ao avaliar ponto real da face - usando Origin como fallback: {}".format(e))
+        return face.Origin
+
+
 def extrair_faces_referenciaveis(elementos, axis_dir, perp_dir, threshold=0.985):
     """Retorna lista de dicts {pos_axis, pos_perp, ref, host_id} para cada
     face plana referenciavel alinhada ao eixo escolhido. Qualquer falha de
@@ -499,8 +538,9 @@ def extrair_faces_referenciaveis(elementos, axis_dir, perp_dir, threshold=0.985)
                     d = dot(face.FaceNormal, axis_dir)
                     if abs(d) <= threshold:
                         continue
-                    pos_axis = dot(face.Origin, axis_dir)
-                    pos_perp = dot(face.Origin, perp_dir)
+                    ponto_ref = _ponto_referencial_face(face)
+                    pos_axis = dot(ponto_ref, axis_dir)
+                    pos_perp = dot(ponto_ref, perp_dir)
                     resultado.append({
                         "pos_axis": pos_axis, "pos_perp": pos_perp,
                         "ref": face.Reference, "host_id": host_id,
@@ -1448,10 +1488,32 @@ def processar_paredes_individualmente(
 
         perps_parede = [it["pos_perp"] for it in faces_parede]
         meio = sum(perps_parede) / len(perps_parede)
+
+        # [Fase 1 - selecao] O lado da cota nao pode depender de paredes
+        # distantes que nada tem a ver com esta (ex.: outra ala do predio,
+        # so porque e' aproximadamente paralela). O "centro" usado para
+        # decidir o lado agora so considera faces de contexto cujo
+        # pos_axis cai dentro do proprio trecho desta parede (+ folga de
+        # tolz.cluster_tol) - ou seja, so quem esta de fato "de frente"
+        # para este pedaco (mesma sala/corredor), nao o predio inteiro.
+        # Sem isso, uma parede selecionada "embaixo" podia herdar o centro
+        # medio de paredes la em cima e a cota ia pro lado errado (longe
+        # de onde voce selecionou).
+        faixa_min = min(p_ini["pos_axis"], p_fim["pos_axis"]) - tolz.cluster_tol
+        faixa_max = max(p_ini["pos_axis"], p_fim["pos_axis"]) + tolz.cluster_tol
+        faces_contexto_local = [
+            t for t in faces_contexto
+            if faixa_min <= t["pos_axis"] <= faixa_max
+        ]
         centro_perp_modelo = (
-            sum(t["pos_perp"] for t in faces_contexto) / len(faces_contexto)
-            if faces_contexto else meio
+            sum(t["pos_perp"] for t in faces_contexto_local) / len(faces_contexto_local)
+            if faces_contexto_local else meio
         )
+        logger.debug(
+            "Parede {}: centro de lado calculado com {}/{} face(s) de contexto "
+            "(faixa axis [{:.1f}, {:.1f}]cm).".format(
+                wid, len(faces_contexto_local), len(faces_contexto),
+                to_cm(faixa_min), to_cm(faixa_max)))
         sinal = 1.0 if meio >= centro_perp_modelo else -1.0
         extremo = max(perps_parede) if sinal > 0 else min(perps_parede)
 
