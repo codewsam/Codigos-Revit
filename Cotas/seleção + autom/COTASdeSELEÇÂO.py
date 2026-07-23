@@ -332,6 +332,7 @@ def selecionar_paredes_alvo():
         logger.error("Falha na selecao de paredes: {}".format(e))
         forms.alert("Falha na selecao de paredes:\n{}".format(e), exitscript=True)
         return []
+    
 
     paredes = []
     vistos = set()
@@ -1042,14 +1043,6 @@ def gerar_tarefas_de_cota(correntes, itens_todos, tolz):
                 "itens": [itens_c[0], itens_c[-1]],
                 "perp_ref": c["perp"], "nivel": 2,
                 "perimetro": perimetro,
-                # [Fase 4.3] quando o "alinhamento" e' de UMA UNICA parede
-                # (ex.: as duas faces de espessura dela mesma, sem nenhuma
-                # outra parede compartilhando essa posicao), nao e' uma
-                # fileira de verdade - e' so a espessura da propria parede.
-                # Marca pra resolver_layout centralizar em cima dela em vez
-                # de ancorar no extremo do perimetro do predio (o que jogava
-                # essa cota pra bem longe, sem relacao nenhuma com a parede).
-                "parede_unica": len(paredes_na_corrente) == 1,
             })
 
         # Sem paredes identificaveis: usa uma unica cota de alinhamento.
@@ -1062,7 +1055,6 @@ def gerar_tarefas_de_cota(correntes, itens_todos, tolz):
                 "itens": [itens_c[0], itens_c[-1]],
                 "perp_ref": c["perp"], "nivel": 1 if len(itens_c) > 2 else 0,
                 "perimetro": perimetro,
-                "parede_unica": False,
             })
 
     if itens_todos:
@@ -1127,7 +1119,7 @@ def remover_tarefas_duplicadas(tarefas, assinaturas_existentes):
 # ============================================================
 # ETAPA 6 - Layout (posicao perpendicular final de cada tarefa)
 # ============================================================
-def resolver_layout(tarefas, centro_perp_modelo, tolz):
+def resolver_layout(tarefas, centro_perp_modelo, tolz, itens=None):
     """Decide o LADO/posicao final de cada alinhamento, sem precisar
     clicar um ponto:
 
@@ -1173,12 +1165,6 @@ def resolver_layout(tarefas, centro_perp_modelo, tolz):
                 sinal = 1.0
                 extremo = perimetro_max
             for t in lista:
-                # [Fase 4.3] "parede_unica": nao e' uma fileira de verdade
-                # (so a espessura da propria parede) - centraliza nela em
-                # vez de ancorar no extremo do perimetro do predio.
-                if t.get("parede_unica"):
-                    t["perp_pos"] = t["perp_ref"]
-                    continue
                 perp_pos = extremo + sinal * (tolz.cola_elemento + t["nivel"] * tolz.gap_nivel)
                 t["perp_pos"] = perp_pos
                 perp_extremos.append((sinal, perp_pos))
@@ -1187,9 +1173,6 @@ def resolver_layout(tarefas, centro_perp_modelo, tolz):
             # colado na propria posicao do alinhamento.
             sinal = 1.0 if perp_ref >= centro_perp_modelo else -1.0
             for t in lista:
-                if t.get("parede_unica"):
-                    t["perp_pos"] = t["perp_ref"]
-                    continue
                 base = perp_ref + sinal * tolz.cola_elemento
                 perp_pos = base + sinal * (t["nivel"] * tolz.gap_nivel)
                 t["perp_pos"] = perp_pos
@@ -1199,7 +1182,34 @@ def resolver_layout(tarefas, centro_perp_modelo, tolz):
         if t["nome"] != "geral":
             continue
         if not perp_extremos:
-            t["perp_pos"] = tolz.gap_geral
+            # Sem nenhuma tarefa de alinhamento nesse eixo (ex.: parede
+            # isolada, sem 'alinhamento_total'/'vaos' proprio) - antes
+            # isso caia direto em tolz.gap_geral usado como COORDENADA
+            # ABSOLUTA do projeto, sem nenhuma relacao com a geometria
+            # real. Isso podia colocar a cota 'geral' proxima/em cima da
+            # cota 'parede_total'/'vaos' daquela mesma parede (que e'
+            # calculada em processar_paredes_individualmente e nao
+            # aparece aqui em perp_extremos). Agora usa o mesmo padrao
+            # das demais funcoes: extremo real (max/min pos_perp dos
+            # itens do eixo) + afastamento gap_geral, do lado que tiver
+            # mais elementos (mesmo criterio de sinal do centro do
+            # modelo usado em outros lugares do pipeline).
+            if itens:
+                pos_perp_vals = [it["pos_perp"] for it in itens]
+                lado_pos = sum(1 for p in pos_perp_vals if p >= centro_perp_modelo)
+                lado_neg = len(pos_perp_vals) - lado_pos
+                if lado_pos >= lado_neg:
+                    sinal = 1.0
+                    extremo = max(pos_perp_vals)
+                else:
+                    sinal = -1.0
+                    extremo = min(pos_perp_vals)
+                t["perp_pos"] = extremo + sinal * tolz.gap_geral
+            else:
+                # fallback do fallback - sem itens disponiveis, mantem o
+                # comportamento antigo (nao deveria acontecer na pratica,
+                # ja que processar_eixo sempre tem itens nesse ponto).
+                t["perp_pos"] = tolz.gap_geral
             continue
         # geral vai por fora de tudo, no lado que tiver mais elementos
         pos_sinal = [p for s, p in perp_extremos if s > 0]
@@ -1326,7 +1336,7 @@ def processar_eixo(elementos, view, axis, perp, nome_eixo, tolz, assinaturas_exi
     tarefas = remover_tarefas_duplicadas(tarefas, assinaturas_existentes)
 
     centro_perp_modelo = sum(t["pos_perp"] for t in itens) / len(itens)
-    tarefas = resolver_layout(tarefas, centro_perp_modelo, tolz)
+    tarefas = resolver_layout(tarefas, centro_perp_modelo, tolz, itens)
 
     for t in tarefas:
         t["_axis"] = axis
@@ -1598,11 +1608,7 @@ def main():
         )
         return
 
-    # Paredes internas nao devem servir de referencia extra (cruzamento/
-    # intersecao injetado como sub-cota) - so paredes com WallType.Function
-    # = Exterior entram como "paredes de contexto" pra esse fim. Isso evita
-    # que uma parede interna qualquer (ex: 1663771/1664124) seja usada como
-    # ponto de corte dentro da cadeia de outra parede.
+
     contexto_exteriores = identificar_paredes_exteriores(paredes_contexto)
     paredes_contexto_todas = paredes_contexto
     paredes_contexto = [w for w in paredes_contexto_todas if w.Id.IntegerValue in contexto_exteriores]
