@@ -1,11 +1,11 @@
 
 
 
-continuar no ufal e testar 
+continuar no (ufal) e testar 
 
 tentar criar a a terceira linha 
 
-fazer ele cotar tbm aberturas vazias 
+fazer ele cotar tbm aberturas vazias, continuar isso no (myvlog) 
 
 
 
