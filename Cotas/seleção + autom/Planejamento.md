@@ -1,10 +1,13 @@
 
 
 
+continuar no ufal e testar 
 
-continuar no (araujosamuel) o de seleção automatica e testar
 tentar criar a a terceira linha 
+
 fazer ele cotar tbm aberturas vazias 
+
+
 
 
 
