@@ -1042,6 +1042,14 @@ def gerar_tarefas_de_cota(correntes, itens_todos, tolz):
                 "itens": [itens_c[0], itens_c[-1]],
                 "perp_ref": c["perp"], "nivel": 2,
                 "perimetro": perimetro,
+                # [Fase 4.3] quando o "alinhamento" e' de UMA UNICA parede
+                # (ex.: as duas faces de espessura dela mesma, sem nenhuma
+                # outra parede compartilhando essa posicao), nao e' uma
+                # fileira de verdade - e' so a espessura da propria parede.
+                # Marca pra resolver_layout centralizar em cima dela em vez
+                # de ancorar no extremo do perimetro do predio (o que jogava
+                # essa cota pra bem longe, sem relacao nenhuma com a parede).
+                "parede_unica": len(paredes_na_corrente) == 1,
             })
 
         # Sem paredes identificaveis: usa uma unica cota de alinhamento.
@@ -1054,6 +1062,7 @@ def gerar_tarefas_de_cota(correntes, itens_todos, tolz):
                 "itens": [itens_c[0], itens_c[-1]],
                 "perp_ref": c["perp"], "nivel": 1 if len(itens_c) > 2 else 0,
                 "perimetro": perimetro,
+                "parede_unica": False,
             })
 
     if itens_todos:
@@ -1164,6 +1173,12 @@ def resolver_layout(tarefas, centro_perp_modelo, tolz):
                 sinal = 1.0
                 extremo = perimetro_max
             for t in lista:
+                # [Fase 4.3] "parede_unica": nao e' uma fileira de verdade
+                # (so a espessura da propria parede) - centraliza nela em
+                # vez de ancorar no extremo do perimetro do predio.
+                if t.get("parede_unica"):
+                    t["perp_pos"] = t["perp_ref"]
+                    continue
                 perp_pos = extremo + sinal * (tolz.cola_elemento + t["nivel"] * tolz.gap_nivel)
                 t["perp_pos"] = perp_pos
                 perp_extremos.append((sinal, perp_pos))
@@ -1172,6 +1187,9 @@ def resolver_layout(tarefas, centro_perp_modelo, tolz):
             # colado na propria posicao do alinhamento.
             sinal = 1.0 if perp_ref >= centro_perp_modelo else -1.0
             for t in lista:
+                if t.get("parede_unica"):
+                    t["perp_pos"] = t["perp_ref"]
+                    continue
                 base = perp_ref + sinal * tolz.cola_elemento
                 perp_pos = base + sinal * (t["nivel"] * tolz.gap_nivel)
                 t["perp_pos"] = perp_pos
@@ -1579,6 +1597,20 @@ def main():
             exitscript=True,
         )
         return
+
+    # Paredes internas nao devem servir de referencia extra (cruzamento/
+    # intersecao injetado como sub-cota) - so paredes com WallType.Function
+    # = Exterior entram como "paredes de contexto" pra esse fim. Isso evita
+    # que uma parede interna qualquer (ex: 1663771/1664124) seja usada como
+    # ponto de corte dentro da cadeia de outra parede.
+    contexto_exteriores = identificar_paredes_exteriores(paredes_contexto)
+    paredes_contexto_todas = paredes_contexto
+    paredes_contexto = [w for w in paredes_contexto_todas if w.Id.IntegerValue in contexto_exteriores]
+    output.print_md(
+        "**Paredes de contexto (cruzamento/intersecao):** {} de {} sao Exterior - "
+        "so essas contam como referencia extra; paredes internas sao ignoradas "
+        "para esse fim.".format(len(paredes_contexto), len(paredes_contexto_todas))
+    )
 
     paredes_exteriores = identificar_paredes_exteriores(paredes_selecionadas)
     output.print_md("**{} parede(s) identificada(s) como Exterior** (Function do WallType) - "
