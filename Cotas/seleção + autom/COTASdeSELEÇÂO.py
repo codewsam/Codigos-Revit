@@ -1578,7 +1578,7 @@ def processar_paredes_individualmente(
             "(ids: {}).".format(len(sem_cota), ", ".join(str(i) for i in sem_cota)))
     return tarefas
 
-
+ 
 def main():
     view = doc.ActiveView
 
